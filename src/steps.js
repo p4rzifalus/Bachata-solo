@@ -9,16 +9,12 @@
 export const DETECT_META = {
   minCutoff:   { v: 2.5,  min: 0.1,  max: 8,    step: 0.1,  label: "Сглаживание: базовый срез, Гц (меньше — плавнее, но запаздывает)" },
   beta:        { v: 1.0,  min: 0,    max: 5,    step: 0.1,  label: "Сглаживание: реакция на быстрое движение" },
-  moveOn:      { v: 0.5,  min: 0.1,  max: 3,    step: 0.05, label: "Стопа поехала: скорость выше, торсов/с" },
-  stopOff:     { v: 0.35, min: 0.05, max: 1.5,  step: 0.05, label: "Стопа встала: скорость ниже, торсов/с" },
-  settleMs:    { v: 60,   min: 0,    max: 200,  step: 10,   label: "Сколько стопа должна стоять, мс" },
+  moveOn:      { v: 0.4,  min: 0.1,  max: 3,    step: 0.05, label: "Стопа поехала: скорость выше, торсов/с" },
+  stopOff:     { v: 0.5, min: 0.05, max: 1.5,  step: 0.05, label: "Стопа встала: скорость ниже, торсов/с" },
+  settleMs:    { v: 30,   min: 0,    max: 200,  step: 10,   label: "Сколько стопа должна стоять, мс" },
   arriveEps:   { v: 0.05, min: 0.01, max: 0.2,  step: 0.01, label: "Момент постановки: стопа ближе к месту, чем, торсов" },
-  minTravel:   { v: 0.06, min: 0.02, max: 0.6,  step: 0.01, label: "Минимальный путь стопы, торсов" },
-  liftFloor:   { v: 0.08, min: 0.01, max: 0.3,  step: 0.01, label: "Стопа у пола: подъём не больше, торсов" },
-  landRatio:   { v: 0.5,  min: 0.1,  max: 1,    step: 0.05, label: "Стопа опустилась: подъём не больше доли от пика" },
-  floorMs:     { v: 1500, min: 500,  max: 4000, step: 100,  label: "Окно поиска пола, мс" },
-  weightShift: { v: 0.05, min: 0,    max: 0.4,  step: 0.01, label: "Шаг, а не тап: бёдра сместились к стопе, торсов" },
-  weightMs:    { v: 220,  min: 80,   max: 500,  step: 10,   label: "Окно проверки переноса веса, мс" },
+  minTravel:   { v: 0.1, min: 0.02, max: 0.6,  step: 0.01, label: "Минимальный путь стопы, торсов" },
+  touchRev:    { v: 0.3,  min: 0.05, max: 2,    step: 0.05, label: "Касание: стопа развернулась назад быстрее, торсов/с" },
   refractory:  { v: 0.6,  min: 0.2,  max: 1,    step: 0.05, label: "Защита от дублей: доля удара" },
 };
 
@@ -65,6 +61,7 @@ export class StepDetector {
     this.filters = {};
     this.feet = { L: this.freshFoot(), R: this.freshFoot() };
     this.pending = [];
+    this.hipHist = [];
     this.lastEvent = { L: -Infinity, R: -Infinity };
     this.sample = null;
   }
@@ -82,7 +79,9 @@ export class StepDetector {
    * по аудио-часам, w/h — размер кадра в пикселях (иначе на неквадратном кадре врут расстояния).
    * Возвращает массив новых сообщений:
    *   { kind: "land",  foot, t }                      — стопа встала (сразу, для вспышки)
-   *   { kind: "event", foot, t, type, conf, ... }     — итог: шаг или тап (через weightMs)
+   *   { kind: "event", foot, t, type, conf, dir, ... } — итог: шаг или тап (к следующей постановке);
+   *     dir — куда ехала стопа в кадре камеры: +1 вправо по картинке, −1 влево
+   *     (для человека лицом к камере +1 — это его левая сторона)
    */
   update(lm, t, w, h) {
     const out = [];
@@ -98,6 +97,8 @@ export class StepDetector {
 
     const hipX = this.f("hipX", hx * k, t);
     this.sample = { t, hipX };
+    this.hipHist.push([t, hipX]);
+    while (this.hipHist.length && t - this.hipHist[0][0] > 2) this.hipHist.shift();
 
     for (const side of ["L", "R"]) {
       const idx = IDX[side].foot;
@@ -111,63 +112,76 @@ export class StepDetector {
       this.sample[side] = this.stepFoot(side, fx, fy, vis, hipX, t, out);
     }
 
-    // классификация шаг/тап — когда прошло окно проверки переноса веса
+    /* Шаг или тап. На ногу, на которой стоишь, тапнуть нельзя: если следующей
+     * встала та же стопа — веса на ней не было, это тап; если другая — шаг.
+     * Поэтому итог приходит к следующей постановке (обычно через удар).
+     */
+    const landed = out.filter(m => m.kind === "land");
     this.pending = this.pending.filter(p => {
-      if (t - p.t < this.s.weightMs / 1000) return true;
-      const shift = (hipX - p.hipX0) * p.dir;
+      const next = landed.find(m => m.t > p.t);
+      const timeout = t - p.t > 2.5 * this.beatPeriod;
+      if (!next && !timeout) return true;
       out.push({
-        kind: "event", foot: p.foot, t: p.t,
-        type: shift >= this.s.weightShift ? "step" : "tap",
-        conf: p.conf, shift: +shift.toFixed(3), travel: +p.travel.toFixed(3),
+        kind: "event", foot: p.foot, t: p.t, dir: p.dir, how: p.how,
+        type: next && next.foot === p.foot ? "tap" : "step",
+        conf: p.conf, travel: +p.travel.toFixed(3),
       });
       return false;
     });
+    for (const m of landed) this.pending.push(m.pending);
     return out;
+  }
+
+  hipAt(tq) {
+    const h = this.hipHist;
+    for (let i = h.length - 1; i >= 0; i--) if (h[i][0] <= tq) return h[i][1];
+    return h.length ? h[0][1] : 0;
   }
 
   stepFoot(side, fx, fy, vis, hipX, t, out) {
     const F = this.feet[side], s = this.s;
 
-    // пол — самая низкая точка стопы за последние floorMs (y растёт вниз)
+    // высота над полом — только для графика: в базовом шаге стопа почти не поднимается,
+    // и по камере эта высота тонет в дрожи точек, поэтому в решениях она не участвует
     F.hist.push([t, fy]);
-    while (F.hist.length && t - F.hist[0][0] > s.floorMs / 1000) F.hist.shift();
-    const floor = Math.max(...F.hist.map(p => p[1]));
-    const lift = Math.max(0, floor - fy);
+    while (F.hist.length && t - F.hist[0][0] > 1.5) F.hist.shift();
+    const lift = Math.max(0, Math.max(...F.hist.map(p => p[1])) - fy);
 
     // скорость — по сдвигу за ~3 кадра: заметно меньше шума, чем от кадра к кадру
     F.track.push([t, fx, fy]);
     if (F.track.length > 3) F.track.shift();
-    let speed = 0;
+    let speed = 0, vx = 0;
     if (F.track.length > 1) {
-      const [t0, x0, y0] = F.track[0];
-      speed = Math.hypot(fx - x0, fy - y0) / Math.max(1e-3, t - t0);
+      const [t0, x0, y0] = F.track[0], dt = Math.max(1e-3, t - t0);
+      speed = Math.hypot(fx - x0, fy - y0) / dt;
+      vx = (fx - x0) / dt;
     }
 
     if (F.state === "planted") {
-      if (speed > s.moveOn) {
-        F.state = "moving";
-        F.move = { start: t, travel: 0, peakSpeed: speed, peakLift: lift, hipX0: hipX, vis };
-        F.still = null;
-      }
+      if (speed > s.moveOn) this.startMove(F, t, fx, hipX, vis);
     } else {
       const M = F.move;
       if (F.prev) M.travel += Math.hypot(fx - F.prev.x, fy - F.prev.y);
-      M.peakSpeed = Math.max(M.peakSpeed, speed);
-      M.peakLift = Math.max(M.peakLift, lift);
       M.vis = Math.min(M.vis, vis);
+      const disp = fx - M.x0;
+      if (!M.dir && Math.abs(disp) >= s.minTravel / 2) M.dir = Math.sign(disp);
 
-      // у тапа стопа замирает и в верхней точке — поэтому ещё и «опустилась от пика»
-      if (speed < s.stopOff && lift < s.liftFloor && lift <= M.peakLift * s.landRatio + 0.01) {
+      if (speed < s.stopOff) {
+        // встала и стоит — обычная постановка
         if (F.still == null) {
-          // момент остановки — точка пересечения порога между прошлым и этим кадром
           const ps = F.prev?.speed ?? speed;
           const frac = ps > speed ? (ps - s.stopOff) / (ps - speed) : 1;
           F.still = F.prev ? F.prev.t + Math.min(1, Math.max(0, frac)) * (t - F.prev.t) : t;
         }
         if (t - F.still >= s.settleMs / 1000) {
-          this.land(side, this.arrival(F, M.start) ?? F.still, fx, M, out);
+          this.land(side, this.arrival(F, M.start) ?? F.still, M, "settle", out);
           F.state = "planted"; F.move = null; F.still = null;
         }
+      } else if (M.dir && vx * M.dir < -s.touchRev && Math.abs(disp) >= s.minTravel) {
+        // коснулась и сразу поехала обратно — так выглядит тап: момент — крайняя точка
+        const tip = this.extreme(F, M.start, M.dir);
+        this.land(side, tip.t, M, "touch", out);
+        this.startMove(F, tip.t, tip.x, hipX, vis);
       } else {
         F.still = null;
         if (t - M.start > 1.5) { F.state = "planted"; F.move = null; }   // не встала — сбрасываем
@@ -176,6 +190,24 @@ export class StepDetector {
 
     F.prev = { t, x: fx, y: fy, speed };
     return { lift, speed, x: fx, state: F.state };
+  }
+
+  startMove(F, t, x, hipX, vis) {
+    F.state = "moving";
+    F.move = { start: t, x0: x, dir: 0, travel: 0, vis };
+    F.still = null;
+  }
+
+  // Крайняя точка по горизонтали в направлении dir — по несглаженным точкам.
+  extreme(F, since, dir) {
+    const raw = F.raw.filter(p => p[0] >= since);
+    let best = null;
+    raw.forEach((p, i) => {
+      const a = raw[Math.max(0, i - 1)], b = raw[Math.min(raw.length - 1, i + 1)];
+      const x = (a[1] + p[1] + b[1]) / 3;
+      if (!best || x * dir > best.x * dir) best = { t: p[0], x };
+    });
+    return best ?? { t: F.prev.t, x: F.prev.x };
   }
 
   /* Момент постановки задним числом, по несглаженным точкам: последний момент,
@@ -202,15 +234,12 @@ export class StepDetector {
     return null;
   }
 
-  land(side, tLand, fx, M, out) {
+  land(side, tLand, M, how, out) {
     if (M.travel < this.s.minTravel) return;                                   // дрожь, а не шаг
     if (tLand - this.lastEvent[side] < this.s.refractory * this.beatPeriod) return;  // дубль
     this.lastEvent[side] = tLand;
     const conf = +(Math.min(1, M.vis) * Math.min(1, M.travel / (2 * this.s.minTravel))).toFixed(2);
-    out.push({ kind: "land", foot: side, t: tLand });
-    this.pending.push({
-      foot: side, t: tLand, hipX0: M.hipX0, dir: Math.sign(fx - M.hipX0) || 1,
-      conf, travel: M.travel,
-    });
+    out.push({ kind: "land", foot: side, t: tLand, dir: M.dir || 1,
+      pending: { foot: side, t: tLand, dir: M.dir || 1, how, conf, travel: M.travel } });
   }
 }

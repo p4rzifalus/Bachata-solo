@@ -9,6 +9,7 @@ import { BeatPlayer } from "./player.js";
 import { StepDetector } from "./steps.js";
 import { loadSettings, mountSliders } from "./debug.js";
 import { LiveChart } from "./chart.js";
+import { StartCheck, dirWord } from "./start.js";
 
 const DEBUG = new URLSearchParams(location.search).has("debug");
 if (DEBUG) document.body.classList.add("debug");
@@ -112,9 +113,10 @@ function runDance(res, tAudio) {
       // вспышка сразу, как стопа встала; без метронома — белая, просто «вижу шаг»
       flash(match && !match.countIn ? timingColor(match.offsetMs) : COLORS.chalk);
       if (DEBUG) chart.mark(t, m.foot, "land");
+      if (match) checkOne(t, m.dir, match, m.pending.conf);
       continue;
     }
-    // итог шаг/тап приходит чуть позже — после проверки переноса веса
+    // итог шаг/тап приходит к следующей постановке: тап — если следующей встала та же стопа
     if (m.type === "tap") {
       tapIcon.classList.add("on");
       clearTimeout(tapTimer);
@@ -125,12 +127,45 @@ function runDance(res, tAudio) {
     if (rec && playing) rec.events.push(ev);
     if (DEBUG) {
       const side = m.foot === "L" ? "левая" : "правая";
-      dbgLive.textContent = `${side} · ${m.type === "step" ? "шаг" : "тап"}` +
+      dbgLive.textContent = `${side} · ${m.type === "step" ? "шаг" : "тап"} ${dirWord(m.dir)}` +
         (match ? ` · ${match.offsetMs >= 0 ? "+" : ""}${Math.round(match.offsetMs)} мс · счёт ${match.count}` : "") +
-        ` · уверенность ${m.conf} · сдвиг бёдер ${m.shift}\n${fps.text} · время кадра: ${fps.source}`;
+        ` · ${m.how === "touch" ? "касание" : "встала"} · уверенность ${m.conf}\n${fps.text} · время кадра: ${fps.source}`;
     }
   }
 }
+
+/* ─── старт с раз и направление (логика — в start.js) ─── */
+const startNote = $("startNote"), onesNote = $("onesNote");
+let oneDir = "left";
+try { oneDir = localStorage.getItem("bachata.oneDir") || "left"; } catch (e) {}
+let startCheck = null;
+
+function resetStart() {
+  startCheck = null;
+  startNote.textContent = ""; startNote.className = "";
+  onesNote.textContent = "";
+}
+
+function checkOne(t, dir, match, conf) {
+  if (!startCheck) startCheck = new StartCheck(oneDir, player.beatTime(player.countInEnd), 60 / player.markup.bpm);
+  const decided = startCheck.push({ t, dir, conf, count: match.count, countIn: match.countIn, offsetMs: match.offsetMs });
+  if (decided) {
+    startNote.textContent = decided.verdict;
+    startNote.className = decided.ok ? "good" : "warn";
+    if (rec) rec.start = decided;
+  }
+  onesNote.textContent = startCheck.onesText();
+  if (rec && startCheck.ones.n) rec.ones = { ...startCheck.ones, want: dirWord(startCheck.want) };
+}
+
+document.querySelectorAll("#oneDir button").forEach(b => {
+  b.setAttribute("aria-pressed", String(b.dataset.dir === oneDir));
+  b.addEventListener("click", () => {
+    oneDir = b.dataset.dir;
+    try { localStorage.setItem("bachata.oneDir", oneDir); } catch (e) {}
+    document.querySelectorAll("#oneDir button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  });
+});
 
 function drawChart() {
   if (!DEBUG || !cameraOn || screen() !== "metro") return;
@@ -254,6 +289,7 @@ playBtn.addEventListener("click", async () => {
   try { wakeLock = await navigator.wakeLock.request("screen"); } catch (err) {}
   resetCount();
   const markup = metronomeMarkup({ bpm: +bpmEl.value });
+  resetStart();
   player.start(markup);
   detector.setBeatPeriod(60 / markup.bpm);
   if (cameraOn) startRecording(markup);
@@ -305,6 +341,7 @@ function startRecording(markup) {
     videoW: ui.video.videoWidth,
     videoH: ui.video.videoHeight,
     calibrationMs: calibrationMs(),
+    oneDir,
     outputLatencyMs: Math.round(outputLatency(player.ctx) * 1000),
     delegate: engine.delegate,
     userAgent: navigator.userAgent,
