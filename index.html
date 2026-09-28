@@ -18,6 +18,10 @@
   body[data-screen="start"]  #start,
   body[data-screen="camera"] #stage,
   body[data-screen="metro"]  #metro{display:flex}
+  body[data-screen="calib"]  #calib{display:flex}
+  body.cam[data-screen="calib"] #stage{display:flex}
+  body[data-screen="calib"] #hud, body[data-screen="calib"] #controls, body.debug[data-screen="calib"] #fps{display:none}
+  body[data-screen="calib"] video{filter:brightness(.3) saturate(.4)}
   /* с включённой камерой метроном идёт поверх приглушённого видео со скелетом */
   body.cam[data-screen="metro"] #stage{display:flex}
   body[data-screen="metro"] #hud, body[data-screen="metro"] #controls{display:none}
@@ -84,6 +88,28 @@
   .dval{color:var(--chalk);font-variant-numeric:tabular-nums}
   .dval.changed{color:var(--amber)}
   .drow input{width:100%;accent-color:var(--teal)}
+
+  /* калибровка */
+  #calib{flex-direction:column}
+  #calibBox{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.8rem;
+    text-align:center;padding:1.5rem 1.25rem 0;max-width:32rem;margin:0 auto}
+  #calibBox h2{font-size:1.4rem;font-weight:600;margin:0;order:-2}
+  #calibText{line-height:1.5;color:var(--dim);margin:0}
+  #calibText b{color:var(--chalk);font-weight:500}
+  #calibCount{font-weight:200;font-size:min(34vh,50vw);line-height:.85;font-variant-numeric:tabular-nums;display:none}
+  #calibCount.countin{color:var(--dim)}
+  #calib[data-state="running"] #calibCount{display:block}
+  #calibProgress{color:var(--dim);min-height:1.2em;font-variant-numeric:tabular-nums}
+  #calibResult{font-size:1.6rem;font-weight:500;display:none;order:-1}
+  #calibResult.good{color:var(--teal)} #calibResult.warn{color:var(--amber);font-size:1.15rem;font-weight:400}
+  #calib[data-state="result"] #calibResult{display:block}
+  #calibPanel{width:100%;max-width:32rem;margin:0 auto;justify-content:space-between;
+    padding:1rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom));
+    background:linear-gradient(to top,rgba(23,26,28,.92),rgba(23,26,28,0))}
+  #calRow{display:none;margin:-.2rem 0 1rem;color:var(--dim);justify-content:flex-start!important}
+  body.cam #calRow{display:flex}
+  #calRow b{color:var(--chalk);font-weight:500;font-variant-numeric:tabular-nums}
+  #calRow button{padding:.4rem .9rem;font-size:.92rem;margin-left:auto}
 
   @media (prefers-reduced-motion:reduce){#count.pop{animation:none}#flash.on{animation:none}#sliders{transition:none}}
 
@@ -167,6 +193,20 @@
   </div>
 </section>
 
+<section id="calib" class="screen" data-state="intro">
+  <div id="calibBox">
+    <h2>Калибровка задержки</h2>
+    <p id="calibText"></p>
+    <div id="calibCount">·</div>
+    <div id="calibResult"></div>
+    <div id="calibProgress"></div>
+  </div>
+  <div id="calibPanel" class="row">
+    <button id="calibSkip">Пропустить</button>
+    <button id="calibGo" class="primary">Начать</button>
+  </div>
+</section>
+
 <section id="metro" class="screen">
   <canvas id="chart"></canvas>
   <div id="beatBox">
@@ -181,6 +221,10 @@
   <div id="metroPanel">
     <label for="bpm" class="row"><span>Темп</span><span><b id="bpmVal">128</b> BPM</span></label>
     <input id="bpm" type="range" min="110" max="150" step="1" value="128">
+    <div class="row" id="calRow">
+      <span>Поправка: <b id="calVal">—</b></span>
+      <button id="recalBtn">Перекалибровать</button>
+    </div>
     <div class="row" id="oneDir" role="group" aria-label="Куда шаг на раз">
       <span>На раз шаг</span>
       <button data-dir="left">влево</button>

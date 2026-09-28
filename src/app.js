@@ -10,6 +10,7 @@ import { StepDetector } from "./steps.js";
 import { loadSettings, mountSliders } from "./debug.js";
 import { LiveChart } from "./chart.js";
 import { StartCheck, dirWord } from "./start.js";
+import { CALIB, computeCalibration } from "./calibrate.js";
 
 const DEBUG = new URLSearchParams(location.search).has("debug");
 if (DEBUG) document.body.classList.add("debug");
@@ -32,9 +33,13 @@ const $ = (id) => document.getElementById(id);
 const nextBtn = $("nextBtn");
 const screen = () => document.body.dataset.screen;
 
-// Личная поправка из калибровки (этап 4): на сколько мс сдвинуть события назад.
+// Личная поправка из калибровки: на сколько мс сдвинуть события назад.
+const CAL_KEY = "bachata.calibrationMs";
 function calibrationMs() {
-  try { return +(localStorage.getItem("bachata.calibrationMs") || 0); } catch (e) { return 0; }
+  try { return +(localStorage.getItem(CAL_KEY) || 0); } catch (e) { return 0; }
+}
+function hasCalibration() {
+  try { return localStorage.getItem(CAL_KEY) != null; } catch (e) { return false; }
 }
 
 /* ─── счётчики FPS ───
@@ -84,6 +89,14 @@ function flash(color) {
   flashEl.classList.add("on");
 }
 
+function recordFrame(lm, tAudio) {
+  if (!rec?._markup) return;
+  rec.frames.push({
+    t: +tAudio.toFixed(4),
+    lm: lm ? lm.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +(p.visibility ?? 0).toFixed(2)]) : null,
+  });
+}
+
 function timingColor(offsetMs) {
   const a = Math.abs(offsetMs);
   return a <= 70 ? COLORS.teal : a <= 150 ? COLORS.amber : COLORS.red;
@@ -98,12 +111,7 @@ function runDance(res, tAudio) {
   const msgs = detector.update(lm, tAudio, ui.canvas.width, ui.canvas.height);
   const shift = calibrationMs() / 1000;
 
-  if (rec && playing) {
-    rec.frames.push({
-      t: +tAudio.toFixed(4),
-      lm: lm ? lm.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +(p.visibility ?? 0).toFixed(2)]) : null,
-    });
-  }
+  if (playing) recordFrame(lm, tAudio);
   if (DEBUG && detector.sample) chart.push(tAudio - shift, detector.sample);
 
   for (const m of msgs) {
@@ -188,7 +196,7 @@ function drawChart() {
 function loop() {
   requestAnimationFrame(loop);
   const scr = screen();
-  if (!cameraOn || (scr !== "camera" && scr !== "metro")) return;
+  if (!cameraOn || (scr !== "camera" && scr !== "metro" && scr !== "calib")) return;
 
   const now = performance.now();
   reportFps(now);
@@ -201,8 +209,10 @@ function loop() {
 
   ui.resize(ui.video.videoWidth, ui.video.videoHeight);
   ui.clear();
+  const tAudio = perfToAudio(res ? res.frameTime : now);
   if (scr === "camera") runFraming(res, now);
-  else runDance(res, perfToAudio(res ? res.frameTime : now));
+  else if (scr === "calib") runCalib(res, tAudio);
+  else runDance(res, tAudio);
 }
 
 /* ─── управление ─── */
@@ -234,7 +244,8 @@ $("flipBtn").addEventListener("click", async () => {
   ui.setMirrored(facing === "user");
 });
 
-nextBtn.addEventListener("click", () => showMetronome());
+// Первый раз — сначала калибровка; потом она доступна кнопкой «Перекалибровать».
+nextBtn.addEventListener("click", () => (hasCalibration() ? showMetronome() : showCalib()));
 
 $("metroOnlyBtn").addEventListener("click", () => {
   audio();
@@ -255,6 +266,8 @@ bpmEl.addEventListener("input", () => {
 });
 
 function showMetronome() {
+  if (calib.running) stopCalib();
+  updateCalVal();
   ui.show("metro");
   detector.reset();
   chart.clear();
@@ -328,6 +341,144 @@ $("backBtn").addEventListener("click", () => {
   hold.reset();
   ui.show("camera");
 });
+
+/* ─── калибровка задержки ───
+ * Метроном: отсчёт «5-6-7-8», потом 16 ударов базового шага. Первые 4 не считаются,
+ * по остальным — медиана опозданий (src/calibrate.js). Итог — в localStorage.
+ */
+const calibEl = $("calib"), calibText = $("calibText"), calibCount = $("calibCount");
+const calibProgress = $("calibProgress"), calibResult = $("calibResult");
+const calibGo = $("calibGo"), calibSkip = $("calibSkip");
+const calib = { running: false, finishing: false, lands: [], shown: -1, bpm: 128 };
+
+function calibState(state) {
+  calibEl.dataset.state = state;
+  const side = oneDir === "left" ? "левой влево" : "правой вправо";
+  if (state === "intro") {
+    calibText.innerHTML = `Встань так, чтобы было видно всё тело. После отсчёта «5-6-7-8» танцуй
+      <b>базовый шаг</b> — 16 ударов, начни на раз <b>${side}</b>.<br>Так я узнаю твою личную задержку:
+      наушники, камера и реакция. Надень те наушники, в которых будешь танцевать.`;
+    calibProgress.textContent = "";
+    calibGo.textContent = "Начать";
+    calibSkip.textContent = hasCalibration() ? "Отмена" : "Пропустить";
+  } else if (state === "running") {
+    calibText.innerHTML = `Базовый шаг на каждый удар, начни на раз <b>${side}</b>.`;
+    calibGo.textContent = "Стоп";
+    calibSkip.textContent = "Отмена";
+  }
+}
+
+function showCalib() {
+  stopPlaying();
+  detector.reset();
+  calib.running = false;
+  calibState("intro");
+  ui.show("calib");
+}
+
+function startCalib() {
+  const ctx = audio();
+  player = player || new BeatPlayer(ctx, masterOut());
+  calib.bpm = +bpmEl.value;
+  const P = 60 / calib.bpm;
+  const markup = metronomeMarkup({ bpm: calib.bpm, countIn: 4, duration: (4 + CALIB.beats) * P + 0.01 });
+  calib.lands = []; calib.running = true; calib.finishing = false; calib.shown = -1;
+  detector.reset();
+  detector.setBeatPeriod(P);
+  player.start(markup);
+  startRecording(markup);
+  rec.kind = "calibration";
+  calibState("running");
+  calibCount.textContent = "·";
+  requestAnimationFrame(drawCalib);
+}
+
+function stopCalib() {
+  player?.stop();
+  calib.running = false;
+  finishRecording();
+}
+
+function runCalib(res, tAudio) {
+  const lm = res?.landmarks ?? null;
+  if (lm) ui.drawSkeleton(lm, "rgba(240,237,232,.55)");
+  const msgs = detector.update(lm, tAudio, ui.canvas.width, ui.canvas.height);
+  if (!calib.running) return;
+  recordFrame(lm, tAudio);
+  for (const m of msgs) {
+    if (m.kind !== "land") continue;
+    calib.lands.push({ t: m.t, foot: m.foot, dir: m.dir });   // без поправки: её и меряем
+    flash(COLORS.chalk);
+  }
+}
+
+function drawCalib() {
+  if (screen() !== "calib" || !calib.running) return;
+  requestAnimationFrame(drawCalib);
+  if (!player.playing) {
+    // доигрался последний удар — ждём, пока встанет последняя стопа, и считаем
+    if (!calib.finishing) { calib.finishing = true; setTimeout(finishCalib, 600); }
+    return;
+  }
+  const b = player.now();
+  if (!b || b.index === calib.shown) return;
+  calib.shown = b.index;
+  calibCount.textContent = b.count;
+  calibCount.className = b.countIn ? "countin" : "";
+  const k = b.index - player.countInEnd + 1;
+  calibProgress.textContent = b.countIn ? "отсчёт" : k <= CALIB.skip ? `входим в ритм · ${k} из ${CALIB.beats}` : `${k} из ${CALIB.beats}`;
+}
+
+function finishCalib() {
+  if (!calib.running) return;
+  calib.running = false;
+  const P = 60 / calib.bpm, beats = [], counts = [];
+  for (let i = player.countInEnd; i < player.countInEnd + CALIB.beats; i++) {
+    beats.push(player.beatTime(i));
+    counts.push(player.counts[i]);
+  }
+  const r = computeCalibration(calib.lands, beats, counts, P, oneDir);
+  if (rec) { rec.calibration = r; finishRecording(); }
+
+  calibState("result");
+  if (r.ok) {
+    try { localStorage.setItem(CAL_KEY, String(r.ms)); } catch (e) {}
+    calibResult.textContent = `Твоя поправка: ${r.ms} мс`;
+    calibResult.className = "good";
+    calibText.innerHTML = "Если сменишь наушники или колонку — перекалибруйся.";
+    calibSkip.textContent = "Ещё раз";
+    calibGo.textContent = "Дальше";
+  } else {
+    calibResult.textContent = r.reason;
+    calibResult.className = "warn";
+    calibText.innerHTML = hasCalibration() ? `Оставлю прежнюю поправку: ${calibrationMs()} мс.` : "";
+    calibSkip.textContent = hasCalibration() ? "Дальше" : "Пропустить";
+    calibGo.textContent = "Ещё раз";
+  }
+  calibProgress.textContent = `шагов ${r.hits} из ${r.expected} · разброс ±${r.spread} мс` +
+    (DEBUG ? ` · нога совпала ${r.footMatch}${r.lateBeat ? " · опоздание больше полуудара" : ""}` : "");
+  updateCalVal();
+}
+
+calibGo.addEventListener("click", () => {
+  const state = calibEl.dataset.state;
+  if (state === "running") { stopCalib(); calibState("intro"); return; }
+  if (state === "result" && calibResult.className === "good") { showMetronome(); return; }
+  startCalib();
+});
+
+calibSkip.addEventListener("click", () => {
+  const state = calibEl.dataset.state;
+  if (state === "running") { stopCalib(); calibState("intro"); return; }
+  if (state === "result" && calibResult.className === "good") { startCalib(); return; }   // «Ещё раз»
+  showMetronome();
+});
+
+function updateCalVal() {
+  $("calVal").textContent = hasCalibration() ? `${calibrationMs()} мс` : "нет";
+}
+$("recalBtn").addEventListener("click", showCalib);
+updateCalVal();
 
 /* ─── запись сессии ───
  * Сырые точки по кадрам + события + удары. Потом детекцию можно прогнать
