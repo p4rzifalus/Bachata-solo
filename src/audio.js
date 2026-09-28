@@ -27,3 +27,21 @@ export function outputLatency(c = ctx) {
   if (!c) return 0;
   return (c.outputLatency || 0) + (c.baseLatency || 0);
 }
+
+/* Перевод времени performance.now() (мс) на аудио-часы (с) — в «слышимое» время:
+ * какой момент звуковой дорожки звучит из динамика в эту миллисекунду.
+ * getOutputTimestamp даёт пару «время аудио ↔ время страницы» уже с учётом задержки вывода.
+ * Сдвиг между часами берём медианой по последним замерам, чтобы не дёргался.
+ */
+const offsets = [];
+export function perfToAudio(perfMs) {
+  const c = audio();
+  let off;
+  const ts = c.getOutputTimestamp?.();
+  if (ts && ts.performanceTime > 0) off = ts.contextTime - ts.performanceTime / 1000;
+  else off = c.currentTime - outputLatency(c) - performance.now() / 1000;
+  offsets.push(off);
+  if (offsets.length > 60) offsets.shift();
+  const sorted = [...offsets].sort((a, b) => a - b);
+  return perfMs / 1000 + sorted[sorted.length >> 1];
+}

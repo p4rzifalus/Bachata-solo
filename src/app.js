@@ -1,11 +1,14 @@
-/* Оркестровка экранов: старт → проверка кадра → метроном. */
+/* Оркестровка экранов: старт → проверка кадра → метроном с детекцией шагов. */
 
 import { PoseEngine } from "./pose.js";
 import { checkFullBody, missingPoints, HoldTimer } from "./framing.js";
 import { UI, COLORS } from "./ui.js";
-import { audio, masterOut, outputLatency } from "./audio.js";
+import { audio, masterOut, outputLatency, perfToAudio } from "./audio.js";
 import { metronomeMarkup } from "./beatmap.js";
 import { BeatPlayer } from "./player.js";
+import { StepDetector } from "./steps.js";
+import { loadSettings, mountSliders } from "./debug.js";
+import { LiveChart } from "./chart.js";
 
 const DEBUG = new URLSearchParams(location.search).has("debug");
 if (DEBUG) document.body.classList.add("debug");
@@ -13,30 +16,37 @@ if (DEBUG) document.body.classList.add("debug");
 const ui = new UI();
 const engine = new PoseEngine(ui.video);
 const hold = new HoldTimer();
+const settings = loadSettings();
+const detector = new StepDetector(settings);
+const chart = new LiveChart(document.getElementById("chart"));
 
 let facing = "user";
-let running = false;
 let confirmed = false;   // тело простояло в кадре 2 секунды
 let wakeLock = null;
 let cameraOn = false;
+let player = null;
+let rec = null;          // запись текущей (или последней) сессии для «Скачать данные»
 
-const nextBtn = document.getElementById("nextBtn");
+const $ = (id) => document.getElementById(id);
+const nextBtn = $("nextBtn");
+const screen = () => document.body.dataset.screen;
+
+// Личная поправка из калибровки (этап 4): на сколько мс сдвинуть события назад.
+function calibrationMs() {
+  try { return +(localStorage.getItem("bachata.calibrationMs") || 0); } catch (e) { return 0; }
+}
 
 /* ─── счётчики FPS ───
  * Камера — сколько новых кадров приходит; модель — сколько кадров успели обработать.
  */
-const fps = { cam: 0, model: 0, since: performance.now() };
-function countCameraFrames() {
-  if (!("requestVideoFrameCallback" in HTMLVideoElement.prototype)) return;
-  const tick = () => { fps.cam++; ui.video.requestVideoFrameCallback(tick); };
-  ui.video.requestVideoFrameCallback(tick);
-}
+const fps = { model: 0, since: performance.now(), text: "—", source: "—" };
 function reportFps(now) {
   const dt = now - fps.since;
   if (dt < 1000) return;
-  const cam = fps.cam ? Math.round(fps.cam * 1000 / dt) : "—";
-  ui.fps(`камера ${cam} · модель ${Math.round(fps.model * 1000 / dt)} fps · ${engine.delegate}`);
-  fps.cam = fps.model = 0; fps.since = now;
+  const cam = engine.camFrames ? Math.round(engine.camFrames * 1000 / dt) : "—";
+  fps.text = `камера ${cam} · модель ${Math.round(fps.model * 1000 / dt)} fps · ${engine.delegate}`;
+  ui.fps(fps.text);
+  engine.camFrames = 0; fps.model = 0; fps.since = now;
 }
 
 /* ─── проверка кадра ─── */
@@ -62,25 +72,106 @@ function runFraming(res, now) {
   }
 }
 
+/* ─── танец: детекция шагов поверх метронома ─── */
+const flashEl = $("flash"), tapIcon = $("tapIcon"), dbgLive = $("dbgLive");
+let tapTimer = 0;
+
+function flash(color) {
+  flashEl.style.setProperty("--flash", color);
+  flashEl.classList.remove("on");
+  void flashEl.offsetWidth;
+  flashEl.classList.add("on");
+}
+
+function timingColor(offsetMs) {
+  const a = Math.abs(offsetMs);
+  return a <= 70 ? COLORS.teal : a <= 150 ? COLORS.amber : COLORS.red;
+}
+
+function runDance(res, tAudio) {
+  const lm = res?.landmarks ?? null;
+  if (lm) ui.drawSkeleton(lm, "rgba(240,237,232,.55)");
+
+  const playing = player?.playing;
+  if (playing) detector.setBeatPeriod(60 / player.markup.bpm);
+  const msgs = detector.update(lm, tAudio, ui.canvas.width, ui.canvas.height);
+  const shift = calibrationMs() / 1000;
+
+  if (rec && playing) {
+    rec.frames.push({
+      t: +tAudio.toFixed(4),
+      lm: lm ? lm.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +(p.visibility ?? 0).toFixed(2)]) : null,
+    });
+  }
+  if (DEBUG && detector.sample) chart.push(tAudio - shift, detector.sample);
+
+  for (const m of msgs) {
+    const t = m.t - shift;
+    const match = playing ? player.match(t) : null;
+    if (m.kind === "land") {
+      // вспышка сразу, как стопа встала; без метронома — белая, просто «вижу шаг»
+      flash(match && !match.countIn ? timingColor(match.offsetMs) : COLORS.chalk);
+      if (DEBUG) chart.mark(t, m.foot, "land");
+      continue;
+    }
+    // итог шаг/тап приходит чуть позже — после проверки переноса веса
+    if (m.type === "tap") {
+      tapIcon.classList.add("on");
+      clearTimeout(tapTimer);
+      tapTimer = setTimeout(() => tapIcon.classList.remove("on"), 450);
+    }
+    if (DEBUG) chart.mark(t, m.foot, m.type);
+    const ev = { ...m, t: +m.t.toFixed(4), ...(match && { beat: match.index, count: match.count, offsetMs: Math.round(match.offsetMs) }) };
+    if (rec && playing) rec.events.push(ev);
+    if (DEBUG) {
+      const side = m.foot === "L" ? "левая" : "правая";
+      dbgLive.textContent = `${side} · ${m.type === "step" ? "шаг" : "тап"}` +
+        (match ? ` · ${match.offsetMs >= 0 ? "+" : ""}${Math.round(match.offsetMs)} мс · счёт ${match.count}` : "") +
+        ` · уверенность ${m.conf} · сдвиг бёдер ${m.shift}\n${fps.text} · время кадра: ${fps.source}`;
+    }
+  }
+}
+
+function drawChart() {
+  if (!DEBUG || !cameraOn || screen() !== "metro") return;
+  // ось — время звука; точки тела и события на графике уже сдвинуты на поправку калибровки
+  const now = perfToAudio(performance.now());
+  const beats = [];
+  if (player?.markup) {
+    const b = player.markup.beats;
+    for (let i = 0; i < b.length; i++) {
+      const t = player.beatTime(i);
+      if (t < now - 5) continue;
+      if (t > now) break;
+      beats.push({ t, count: player.counts[i] });
+    }
+  }
+  chart.draw(now, beats);
+}
+
 /* ─── цикл ─── */
 function loop() {
   requestAnimationFrame(loop);
-  if (!running) return;
+  const scr = screen();
+  if (!cameraOn || (scr !== "camera" && scr !== "metro")) return;
 
   const now = performance.now();
   reportFps(now);
+  drawChart();
 
   const res = engine.detect();
   if (res === undefined) return;            // кадр не обновился
   fps.model++;
+  if (res) fps.source = res.source;
 
   ui.resize(ui.video.videoWidth, ui.video.videoHeight);
   ui.clear();
-  runFraming(res, now);
+  if (scr === "camera") runFraming(res, now);
+  else runDance(res, perfToAudio(res ? res.frameTime : now));
 }
 
 /* ─── управление ─── */
-document.getElementById("startBtn").addEventListener("click", async (e) => {
+$("startBtn").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
   btn.textContent = "Загружаю модель…";
@@ -91,44 +182,34 @@ document.getElementById("startBtn").addEventListener("click", async (e) => {
     try { wakeLock = await navigator.wakeLock.request("screen"); } catch (err) {}
     ui.show("camera");
     ui.hint("Встань в паре метров от камеры, чтобы было видно тебя целиком.");
-    running = true;
     cameraOn = true;
-    countCameraFrames();
+    document.body.classList.add("cam");
     loop();
   } catch (err) {
     btn.disabled = false;
     btn.textContent = "Включить камеру";
-    document.getElementById("startError").textContent =
+    $("startError").textContent =
       "Камера не открылась: " + err.message + ". Нужен https и разрешение на камеру.";
   }
 });
 
-document.getElementById("flipBtn").addEventListener("click", async () => {
+$("flipBtn").addEventListener("click", async () => {
   facing = facing === "user" ? "environment" : "user";
   await engine.startCamera(facing);
   ui.setMirrored(facing === "user");
-  countCameraFrames();
 });
 
-nextBtn.addEventListener("click", () => {
-  running = false;
-  showMetronome();
-});
+nextBtn.addEventListener("click", () => showMetronome());
 
-document.getElementById("metroOnlyBtn").addEventListener("click", () => {
+$("metroOnlyBtn").addEventListener("click", () => {
   audio();
   showMetronome();
 });
 
 /* ─── метроном ─── */
-const bpmEl = document.getElementById("bpm");
-const bpmVal = document.getElementById("bpmVal");
-const playBtn = document.getElementById("playBtn");
-const countEl = document.getElementById("count");
-const countLabel = document.getElementById("countLabel");
+const bpmEl = $("bpm"), bpmVal = $("bpmVal"), playBtn = $("playBtn");
+const countEl = $("count"), countLabel = $("countLabel"), latencyEl = $("latency");
 const dots = [...document.querySelectorAll("#dots i")];
-const latencyEl = document.getElementById("latency");
-let player = null;
 let shownIndex = -1;
 
 try { bpmEl.value = localStorage.getItem("bachata.bpm") || bpmEl.value; } catch (e) {}
@@ -140,6 +221,8 @@ bpmEl.addEventListener("input", () => {
 
 function showMetronome() {
   ui.show("metro");
+  detector.reset();
+  chart.clear();
   resetCount();
   requestAnimationFrame(drawBeat);
 }
@@ -157,27 +240,37 @@ function setPlaying(on) {
   bpmEl.disabled = on;
 }
 
+function stopPlaying() {
+  if (player?.playing) player.stop();
+  setPlaying(false);
+  resetCount();
+  finishRecording();
+}
+
 playBtn.addEventListener("click", async () => {
   const ctx = audio();
   player = player || new BeatPlayer(ctx, masterOut());
-  if (player.playing) { player.stop(); setPlaying(false); resetCount(); return; }
+  if (player.playing) { stopPlaying(); return; }
   try { wakeLock = await navigator.wakeLock.request("screen"); } catch (err) {}
   resetCount();
-  player.start(metronomeMarkup({ bpm: +bpmEl.value }));
+  const markup = metronomeMarkup({ bpm: +bpmEl.value });
+  player.start(markup);
+  detector.setBeatPeriod(60 / markup.bpm);
+  if (cameraOn) startRecording(markup);
   setPlaying(true);
 });
 
 // Счёт на экране берётся из тех же аудио-часов, по которым стоят удары,
 // с поправкой на задержку вывода звука — поэтому цифра меняется вместе со звуком.
 function drawBeat() {
-  if (document.body.dataset.screen !== "metro") return;
+  if (screen() !== "metro") return;
   requestAnimationFrame(drawBeat);
 
   if (DEBUG && player) {
     const c = player.ctx;
-    latencyEl.textContent = `вывод звука ${Math.round(outputLatency(c) * 1000)} мс · ${c.sampleRate} Гц · ${c.state}`;
+    latencyEl.textContent = `вывод звука ${Math.round(outputLatency(c) * 1000)} мс · ${c.sampleRate} Гц · ${c.state} · поправка ${calibrationMs()} мс`;
   }
-  if (!player?.playing) { if (player && shownIndex >= 0) { setPlaying(false); resetCount(); } return; }
+  if (!player?.playing) { if (player && shownIndex >= 0) stopPlaying(); return; }
 
   const b = player.now();
   if (!b || b.index === shownIndex) return;
@@ -191,20 +284,81 @@ function drawBeat() {
   dots.forEach((d, k) => d.classList.toggle("on", !b.countIn && k < b.count));
 }
 
-document.getElementById("backBtn").addEventListener("click", () => {
-  player?.stop();
-  setPlaying(false);
+$("backBtn").addEventListener("click", () => {
+  stopPlaying();
   if (!cameraOn) { ui.show("start"); return; }
   confirmed = false;
   nextBtn.disabled = true;
   hold.reset();
   ui.show("camera");
-  running = true;
 });
+
+/* ─── запись сессии ───
+ * Сырые точки по кадрам + события + удары. Потом детекцию можно прогнать
+ * на записи без повторного танца: node tools/replay.mjs запись.json
+ */
+function startRecording(markup) {
+  rec = {
+    version: 1,
+    recordedAt: new Date().toISOString(),
+    bpm: markup.bpm,
+    videoW: ui.video.videoWidth,
+    videoH: ui.video.videoHeight,
+    calibrationMs: calibrationMs(),
+    outputLatencyMs: Math.round(outputLatency(player.ctx) * 1000),
+    delegate: engine.delegate,
+    userAgent: navigator.userAgent,
+    frames: [],
+    events: [],
+  };
+  rec._markup = markup;
+  rec._origin = player.origin;
+  rec._counts = player.counts;
+  rec._countStart = player.countInEnd;
+}
+
+// Готовая к выгрузке копия записи: добавляем удары, которые прозвучали за время записи.
+function snapshot(r) {
+  const m = r._markup, end = r.frames.at(-1)?.t ?? 0;
+  const out = { ...r, frames: [...r.frames], events: [...r.events], beats: [], counts: [] };
+  delete out._markup;
+  for (let i = 0; i < m.beats.length; i++) {
+    const t = r._origin + m.beats[i];
+    if (t > end + 1) break;
+    out.beats.push(+t.toFixed(4));
+    out.counts.push(r._counts[i]);
+  }
+  out.countStartIndex = r._countStart;
+  out.frameTimeSource = fps.source;
+  out.settings = { ...settings };
+  for (const k of ["_origin", "_counts", "_countStart"]) delete out[k];
+  return out;
+}
+
+function finishRecording() {
+  if (rec?._markup) rec = snapshot(rec);
+}
+
+$("exportBtn").addEventListener("click", () => {
+  if (!rec || !rec.frames.length) { dbgLive.textContent = "Записывать нечего: включи камеру и потанцуй под метроном."; return; }
+  const data = rec._markup ? snapshot(rec) : rec;   // можно скачать, не останавливая метроном
+  const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `bachata-session-${data.recordedAt.replace(/[:.]/g, "-").slice(0, 19)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+/* ─── пороги ─── */
+const sliders = mountSliders($("sliderRows"), settings);
+$("slidersBtn").addEventListener("click", () => $("sliders").classList.add("on"));
+$("slidersClose").addEventListener("click", () => $("sliders").classList.remove("on"));
+$("slidersReset").addEventListener("click", () => sliders.reset());
 
 // Экран гаснет — wake lock снимается; возвращаем его, когда вкладка снова видна.
 document.addEventListener("visibilitychange", async () => {
-  if (document.visibilityState === "visible" && running && (!wakeLock || wakeLock.released)) {
+  if (document.visibilityState === "visible" && cameraOn && (!wakeLock || wakeLock.released)) {
     try { wakeLock = await navigator.wakeLock.request("screen"); } catch (err) {}
   }
 });

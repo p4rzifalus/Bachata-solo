@@ -12,7 +12,7 @@ const BONES = [
 ];
 const JOINTS = [...new Set(BONES.flat())];
 
-export const COLORS = { chalk: "#F0EDE8", teal: "#79B3A5", amber: "#E8B23A", dim: "#8A9296" };
+export const COLORS = { chalk: "#F0EDE8", teal: "#79B3A5", amber: "#E8B23A", red: "#E0654F", dim: "#8A9296" };
 
 export class UI {
   constructor() {

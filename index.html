@@ -18,6 +18,11 @@
   body[data-screen="start"]  #start,
   body[data-screen="camera"] #stage,
   body[data-screen="metro"]  #metro{display:flex}
+  /* с включённой камерой метроном идёт поверх приглушённого видео со скелетом */
+  body.cam[data-screen="metro"] #stage{display:flex}
+  body[data-screen="metro"] #hud, body[data-screen="metro"] #controls{display:none}
+  body[data-screen="metro"] video{filter:brightness(.3) saturate(.4)}
+  body.cam[data-screen="metro"] #metroPanel{background:linear-gradient(to top,rgba(23,26,28,.92),rgba(23,26,28,0))}
   .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
 
   /* метроном */
@@ -43,7 +48,36 @@
   #latency{font:12px/1.3 ui-monospace,Menlo,monospace;color:var(--dim);margin-bottom:.9rem;display:none}
   body.debug #latency{display:block}
   #metroPanel .row{justify-content:space-between}
-  @media (prefers-reduced-motion:reduce){#count.pop{animation:none}}
+
+  /* вспышка по краю экрана на каждый распознанный шаг */
+  #flash{position:fixed;inset:0;pointer-events:none;opacity:0;box-shadow:inset 0 0 0 14px var(--flash,#F0EDE8),inset 0 0 60px 20px var(--flash,#F0EDE8)}
+  #flash.on{animation:flash .35s ease-out}
+  @keyframes flash{from{opacity:.9}to{opacity:0}}
+  #tapIcon{font-size:.95rem;color:var(--chalk);border:2px solid var(--chalk);border-radius:999px;
+    padding:.15rem .7rem;opacity:0;transition:opacity .25s}
+  #tapIcon.on{opacity:1;transition:none}
+
+  /* отладка */
+  #chart{display:none;width:100%;height:170px;flex:none}
+  body.debug.cam #chart{display:block}
+  #dbgRow{display:none;gap:.5rem;margin-bottom:.8rem}
+  body.debug #dbgRow{display:flex}
+  #dbgRow button{padding:.45rem .8rem;font-size:.88rem}
+  #dbgLive{font:12px/1.4 ui-monospace,Menlo,monospace;color:var(--dim);margin-bottom:.6rem;display:none;white-space:pre-wrap}
+  body.debug.cam #dbgLive{display:block}
+  #sliders{position:fixed;left:0;right:0;top:0;max-height:78vh;overflow:auto;z-index:5;
+    background:rgba(23,26,28,.97);border-bottom:1px solid rgba(240,237,232,.15);
+    padding:calc(1rem + env(safe-area-inset-top)) 1rem 1.2rem;transform:translateY(-102%);transition:transform .25s}
+  #sliders.on{transform:none}
+  #slidersHead{display:flex;gap:.5rem;margin-bottom:.8rem}
+  #slidersHead button{padding:.4rem .8rem;font-size:.88rem}
+  .drow{margin-bottom:.75rem}
+  .drow label{display:flex;justify-content:space-between;gap:1rem;font-size:.85rem;color:var(--dim);margin-bottom:.25rem}
+  .dval{color:var(--chalk);font-variant-numeric:tabular-nums}
+  .dval.changed{color:var(--amber)}
+  .drow input{width:100%;accent-color:var(--teal)}
+
+  @media (prefers-reduced-motion:reduce){#count.pop{animation:none}#flash.on{animation:none}#sliders{transition:none}}
 
   /* старт и заглушка следующего этапа */
   .card{flex-direction:column;justify-content:center;align-items:flex-start;
@@ -75,6 +109,7 @@
     font:12px/1.3 ui-monospace,Menlo,monospace;color:var(--dim);
     background:rgba(23,26,28,.72);padding:.25rem .45rem;border-radius:6px;display:none}
   body.debug #fps{display:block}
+  body[data-screen="metro"] #fps{display:none}
 
   #controls{position:absolute;left:0;right:0;bottom:0;
     padding:1rem 1rem calc(1rem + env(safe-area-inset-bottom));
@@ -125,22 +160,40 @@
 </section>
 
 <section id="metro" class="screen">
+  <canvas id="chart"></canvas>
   <div id="beatBox">
     <div id="countLabel">&nbsp;</div>
     <div id="count">·</div>
     <div id="dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div id="tapIcon">тап</div>
   </div>
 
   <div id="metroPanel">
     <label for="bpm" class="row"><span>Темп</span><span><b id="bpmVal">128</b> BPM</span></label>
     <input id="bpm" type="range" min="110" max="150" step="1" value="128">
     <div id="latency">—</div>
+    <div id="dbgLive"></div>
+    <div id="dbgRow">
+      <button id="slidersBtn">Пороги</button>
+      <button id="exportBtn">Скачать данные</button>
+    </div>
     <div class="row">
       <button id="backBtn">Назад</button>
       <button id="playBtn" class="primary">Старт</button>
     </div>
   </div>
 </section>
+
+<div id="flash"></div>
+
+<div id="sliders">
+  <div id="slidersHead">
+    <button id="slidersReset">Сбросить</button>
+    <span class="spacer" style="flex:1"></span>
+    <button id="slidersClose">Закрыть</button>
+  </div>
+  <div id="sliderRows"></div>
+</div>
 
 <script type="module" src="./src/app.js"></script>
 </body>

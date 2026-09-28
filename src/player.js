@@ -6,7 +6,7 @@
 
 import { beatCounts, beatIndexAt } from "./beatmap.js";
 import { playBeat } from "./sounds.js";
-import { outputLatency } from "./audio.js";
+import { perfToAudio } from "./audio.js";
 
 const LOOKAHEAD = 0.15;   // на сколько секунд вперёд ставим удары
 const TICK_MS   = 25;     // как часто подкладываем новые
@@ -53,7 +53,22 @@ export class BeatPlayer {
 
   // Время трека, которое сейчас слышно из динамика (с поправкой на задержку вывода).
   heardTime() {
-    return this.ctx.currentTime - outputLatency(this.ctx) - this.origin;
+    return perfToAudio(performance.now()) - this.origin;
+  }
+
+  // Время удара i по аудио-часам.
+  beatTime(i) { return this.origin + this.markup.beats[i]; }
+
+  /* Привязка события (время по аудио-часам) к ближайшему удару:
+   * опоздание в мс (минус — раньше, плюс — позже) и счёт 1–8.
+   */
+  match(t) {
+    if (!this.markup) return null;
+    const b = this.markup.beats, tt = t - this.origin;
+    let i = beatIndexAt(b, tt);
+    if (i < 0) i = 0;
+    else if (i + 1 < b.length && b[i + 1] - tt < tt - b[i]) i++;
+    return { index: i, count: this.counts[i], countIn: i < this.countInEnd, offsetMs: (tt - b[i]) * 1000 };
   }
 
   // Что показать на экране прямо сейчас: номер удара, счёт 1–8 и идёт ли ещё отсчёт.

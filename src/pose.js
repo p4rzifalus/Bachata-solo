@@ -17,6 +17,22 @@ export class PoseEngine {
     this.stream = null;
     this.lastVideoTime = -1;
     this.lastTs = 0;
+    this.camFrames = 0;      // для счётчика FPS камеры
+    this.frameMeta = null;   // метаданные последнего кадра камеры
+  }
+
+  /* requestVideoFrameCallback сообщает, когда кадр был снят (captureTime) или
+   * показан (presentationTime) — это точнее, чем «когда мы до него добрались».
+   */
+  watchFrames() {
+    if (this.watching || !("requestVideoFrameCallback" in HTMLVideoElement.prototype)) return;
+    this.watching = true;
+    const tick = (now, meta) => {
+      this.camFrames++;
+      this.frameMeta = meta;
+      this.video.requestVideoFrameCallback(tick);
+    };
+    this.video.requestVideoFrameCallback(tick);
   }
 
   async initModel() {
@@ -48,12 +64,13 @@ export class PoseEngine {
     });
     this.video.srcObject = this.stream;
     await this.video.play();
+    this.watching = false;
+    this.watchFrames();
   }
 
   /* undefined — кадр не обновился, считать заново незачем;
-   * null — человека нет; иначе { landmarks, ts }.
-   * ts — время кадра в мс по performance.now(). На этапе 3 оно будет
-   * переводиться на аудио-часы (AudioContext.currentTime).
+   * null — человека нет; иначе { landmarks, frameTime, source }.
+   * frameTime — время кадра в мс по performance.now(); app.js переводит его на аудио-часы.
    */
   detect() {
     if (!this.landmarker || this.video.readyState < 2) return undefined;
@@ -63,6 +80,13 @@ export class PoseEngine {
     const ts = Math.max(performance.now(), this.lastTs + 0.001);
     this.lastTs = ts;
     const lm = this.landmarker.detectForVideo(this.video, ts).landmarks?.[0];
-    return lm ? { landmarks: lm, ts } : null;
+    if (!lm) return null;
+    const m = this.frameMeta;
+    let frameTime = ts, source = "now";
+    if (m && Math.abs(m.mediaTime - this.lastVideoTime) < 1e-3) {
+      if (m.captureTime) { frameTime = m.captureTime; source = "capture"; }
+      else if (m.presentationTime) { frameTime = m.presentationTime; source = "presentation"; }
+    }
+    return { landmarks: lm, frameTime, source };
   }
 }
