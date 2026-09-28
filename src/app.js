@@ -1,8 +1,11 @@
-/* Оркестровка экранов. Этап 1: старт → проверка кадра → «Дальше». */
+/* Оркестровка экранов: старт → проверка кадра → метроном. */
 
 import { PoseEngine } from "./pose.js";
 import { checkFullBody, missingPoints, HoldTimer } from "./framing.js";
 import { UI, COLORS } from "./ui.js";
+import { audio, masterOut, outputLatency } from "./audio.js";
+import { metronomeMarkup } from "./beatmap.js";
+import { BeatPlayer } from "./player.js";
 
 const DEBUG = new URLSearchParams(location.search).has("debug");
 if (DEBUG) document.body.classList.add("debug");
@@ -15,6 +18,7 @@ let facing = "user";
 let running = false;
 let confirmed = false;   // тело простояло в кадре 2 секунды
 let wakeLock = null;
+let cameraOn = false;
 
 const nextBtn = document.getElementById("nextBtn");
 
@@ -80,7 +84,7 @@ document.getElementById("startBtn").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
   btn.textContent = "Загружаю модель…";
-  ui.unlockAudio();                          // по жесту — иначе iOS не даст звук
+  audio();                                   // по жесту — иначе iOS не даст звук
   try {
     await engine.startCamera(facing);
     await engine.initModel();
@@ -88,6 +92,7 @@ document.getElementById("startBtn").addEventListener("click", async (e) => {
     ui.show("camera");
     ui.hint("Встань в паре метров от камеры, чтобы было видно тебя целиком.");
     running = true;
+    cameraOn = true;
     countCameraFrames();
     loop();
   } catch (err) {
@@ -107,10 +112,89 @@ document.getElementById("flipBtn").addEventListener("click", async () => {
 
 nextBtn.addEventListener("click", () => {
   running = false;
-  ui.show("next");
+  showMetronome();
 });
 
+document.getElementById("metroOnlyBtn").addEventListener("click", () => {
+  audio();
+  showMetronome();
+});
+
+/* ─── метроном ─── */
+const bpmEl = document.getElementById("bpm");
+const bpmVal = document.getElementById("bpmVal");
+const playBtn = document.getElementById("playBtn");
+const countEl = document.getElementById("count");
+const countLabel = document.getElementById("countLabel");
+const dots = [...document.querySelectorAll("#dots i")];
+const latencyEl = document.getElementById("latency");
+let player = null;
+let shownIndex = -1;
+
+try { bpmEl.value = localStorage.getItem("bachata.bpm") || bpmEl.value; } catch (e) {}
+bpmVal.textContent = bpmEl.value;
+bpmEl.addEventListener("input", () => {
+  bpmVal.textContent = bpmEl.value;
+  try { localStorage.setItem("bachata.bpm", bpmEl.value); } catch (e) {}
+});
+
+function showMetronome() {
+  ui.show("metro");
+  resetCount();
+  requestAnimationFrame(drawBeat);
+}
+
+function resetCount() {
+  shownIndex = -1;
+  countEl.textContent = "·";
+  countEl.className = "";
+  countLabel.innerHTML = "&nbsp;";
+  dots.forEach(d => d.classList.remove("on"));
+}
+
+function setPlaying(on) {
+  playBtn.textContent = on ? "Стоп" : "Старт";
+  bpmEl.disabled = on;
+}
+
+playBtn.addEventListener("click", async () => {
+  const ctx = audio();
+  player = player || new BeatPlayer(ctx, masterOut());
+  if (player.playing) { player.stop(); setPlaying(false); resetCount(); return; }
+  try { wakeLock = await navigator.wakeLock.request("screen"); } catch (err) {}
+  resetCount();
+  player.start(metronomeMarkup({ bpm: +bpmEl.value }));
+  setPlaying(true);
+});
+
+// Счёт на экране берётся из тех же аудио-часов, по которым стоят удары,
+// с поправкой на задержку вывода звука — поэтому цифра меняется вместе со звуком.
+function drawBeat() {
+  if (document.body.dataset.screen !== "metro") return;
+  requestAnimationFrame(drawBeat);
+
+  if (DEBUG && player) {
+    const c = player.ctx;
+    latencyEl.textContent = `вывод звука ${Math.round(outputLatency(c) * 1000)} мс · ${c.sampleRate} Гц · ${c.state}`;
+  }
+  if (!player?.playing) { if (player && shownIndex >= 0) { setPlaying(false); resetCount(); } return; }
+
+  const b = player.now();
+  if (!b || b.index === shownIndex) return;
+  shownIndex = b.index;
+
+  countEl.textContent = b.count;
+  countEl.className = b.countIn ? "countin" : b.count === 1 ? "one" : "";
+  void countEl.offsetWidth;
+  countEl.classList.add("pop");
+  countLabel.textContent = b.countIn ? "отсчёт" : "";
+  dots.forEach((d, k) => d.classList.toggle("on", !b.countIn && k < b.count));
+}
+
 document.getElementById("backBtn").addEventListener("click", () => {
+  player?.stop();
+  setPlaying(false);
+  if (!cameraOn) { ui.show("start"); return; }
   confirmed = false;
   nextBtn.disabled = true;
   hold.reset();

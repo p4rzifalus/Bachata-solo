@@ -52,7 +52,7 @@ export class PoseEngine {
 
   /* undefined — кадр не обновился, считать заново незачем;
    * null — человека нет; иначе { landmarks, ts }.
-   * ts — время кадра в мс по performance.now(). На этапе 2 оно будет
+   * ts — время кадра в мс по performance.now(). На этапе 3 оно будет
    * переводиться на аудио-часы (AudioContext.currentTime).
    */
   detect() {

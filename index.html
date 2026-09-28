@@ -17,7 +17,33 @@
   .screen{position:fixed;inset:0;display:none}
   body[data-screen="start"]  #start,
   body[data-screen="camera"] #stage,
-  body[data-screen="next"]   #next{display:flex}
+  body[data-screen="metro"]  #metro{display:flex}
+  .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+
+  /* метроном */
+  #metro{flex-direction:column}
+  #beatBox{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem}
+  #countLabel{color:var(--dim);font-size:1rem;letter-spacing:.08em;text-transform:uppercase;min-height:1.2em}
+  #count{font-weight:200;font-size:min(46vh,62vw);line-height:.8;font-variant-numeric:tabular-nums;
+    color:var(--chalk);transition:color .08s}
+  #count.one{color:var(--teal);font-weight:500}
+  #count.countin{color:var(--dim)}
+  #count.pop{animation:pop .16s ease-out}
+  @keyframes pop{from{transform:scale(1.08)}to{transform:scale(1)}}
+  #dots{display:flex;gap:.55rem}
+  #dots i{width:10px;height:10px;border-radius:50%;background:rgba(240,237,232,.18)}
+  #dots i.on{background:var(--chalk)}
+  #dots i.on:first-child{background:var(--teal)}
+  #metroPanel{width:100%;max-width:32rem;margin:0 auto;
+    padding:1rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom))}
+  #metroPanel label.row{justify-content:space-between;color:var(--dim);margin-bottom:.4rem}
+  #metroPanel label b{color:var(--chalk);font-weight:500;font-variant-numeric:tabular-nums}
+  #bpm{width:100%;accent-color:var(--teal);margin:0 0 1rem}
+  #bpm:disabled{opacity:.4}
+  #latency{font:12px/1.3 ui-monospace,Menlo,monospace;color:var(--dim);margin-bottom:.9rem;display:none}
+  body.debug #latency{display:block}
+  #metroPanel .row{justify-content:space-between}
+  @media (prefers-reduced-motion:reduce){#count.pop{animation:none}}
 
   /* старт и заглушка следующего этапа */
   .card{flex-direction:column;justify-content:center;align-items:flex-start;
@@ -74,7 +100,10 @@
   <p><b>Видео не покидает телефон</b> — всё считается прямо в браузере.</p>
   <p>Поставь телефон вертикально, отойди на пару метров, чтобы в кадре было всё тело — от макушки до ступней.</p>
   <p id="startError"></p>
-  <button id="startBtn" class="primary">Включить камеру</button>
+  <div class="row">
+    <button id="startBtn" class="primary">Включить камеру</button>
+    <button id="metroOnlyBtn">Только метроном</button>
+  </div>
 </section>
 
 <section id="stage" class="screen">
@@ -95,10 +124,22 @@
   </div>
 </section>
 
-<section id="next" class="screen card">
-  <h1>Кадр проверен</h1>
-  <p>Здесь будет следующий шаг — калибровка задержки и метроном. Они появятся на этапах 2–4.</p>
-  <button id="backBtn">Назад к камере</button>
+<section id="metro" class="screen">
+  <div id="beatBox">
+    <div id="countLabel">&nbsp;</div>
+    <div id="count">·</div>
+    <div id="dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  </div>
+
+  <div id="metroPanel">
+    <label for="bpm" class="row"><span>Темп</span><span><b id="bpmVal">128</b> BPM</span></label>
+    <input id="bpm" type="range" min="110" max="150" step="1" value="128">
+    <div id="latency">—</div>
+    <div class="row">
+      <button id="backBtn">Назад</button>
+      <button id="playBtn" class="primary">Старт</button>
+    </div>
+  </div>
 </section>
 
 <script type="module" src="./src/app.js"></script>

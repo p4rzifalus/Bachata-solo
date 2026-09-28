@@ -1,5 +1,7 @@
 /* Всё, что рисует и звучит. Логики здесь нет. */
 
+import { audio } from "./audio.js";
+
 // Кости скелета: пары номеров точек MediaPipe Pose (без лица и кистей).
 const BONES = [
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
@@ -22,7 +24,6 @@ export class UI {
     this.holdFill = document.getElementById("holdFill");
     this.fpsEl    = document.getElementById("fps");
     this.mirrored = true;
-    this.audio = null;
   }
 
   setMirrored(v) { this.mirrored = v; document.body.classList.toggle("mirrored", v); }
@@ -63,16 +64,9 @@ export class UI {
   }
   fps(text) { if (this.fpsEl) this.fpsEl.textContent = text; }
 
-  // AudioContext создаётся по нажатию кнопки — иначе iOS не даст играть звук.
-  // На следующих этапах этот же контекст станет главными часами.
-  unlockAudio() {
-    this.audio = this.audio || new (window.AudioContext || window.webkitAudioContext)();
-    if (this.audio.state === "suspended") this.audio.resume();
-    return this.audio;
-  }
   beep(freq, ms) {
     try {
-      const a = this.unlockAudio(), t = a.currentTime;
+      const a = audio(), t = a.currentTime;
       const o = a.createOscillator(), g = a.createGain();
       o.type = "sine"; o.frequency.value = freq;
       g.gain.setValueAtTime(.001, t);
