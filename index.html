@@ -96,6 +96,26 @@
   #durRow button[aria-pressed="true"]{background:var(--teal);color:#10201C;border-color:transparent}
   body.playing #metroSettings{display:none}
 
+  /* источник музыки */
+  #srcRow{margin-bottom:.9rem;gap:0!important;justify-content:flex-start!important}
+  #srcRow button{border-radius:0;padding:.45rem 1rem}
+  #srcRow button:first-child{border-radius:10px 0 0 10px}
+  #srcRow button:last-child{border-radius:0 10px 10px 0;border-left:0}
+  #srcRow button[aria-pressed="true"]{background:var(--teal);color:#10201C;border-color:transparent}
+  body[data-src="track"] #metroOpts, body:not([data-src="track"]) #trackOpts{display:none}
+  #trackOpts .files{justify-content:flex-start!important;gap:.5rem;margin-bottom:.6rem}
+  .filebtn{font-weight:500;background:var(--slate);border:1px solid rgba(240,237,232,.18);border-radius:10px;
+    padding:.45rem .9rem;cursor:pointer;font-size:.92rem}
+  .filebtn.has{border-color:var(--teal);color:var(--teal)}
+  .filebtn input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+  .filebtn:focus-within{outline:2px solid var(--teal);outline-offset:2px}
+  #trackOpts button{padding:.45rem .9rem;font-size:.92rem}
+  #trackInfo{font-size:.9rem;line-height:1.45;color:var(--dim);margin-bottom:.6rem}
+  #trackInfo b{color:var(--chalk);font-weight:500}
+  #trackInfo .warn{color:var(--amber)}
+  label.check{display:flex;gap:.5rem;align-items:center;font-size:.9rem;color:var(--dim);margin-bottom:.45rem}
+  label.check input{accent-color:var(--teal);width:1.05rem;height:1.05rem}
+
   /* результат */
   body[data-screen="result"] #result{display:flex}
   #result{flex-direction:column;background:var(--graphite)}
@@ -256,14 +276,30 @@
 
   <div id="metroPanel">
    <div id="metroSettings">
-    <label for="bpm" class="row"><span>Темп</span><span><b id="bpmVal">128</b> BPM</span></label>
-    <input id="bpm" type="range" min="110" max="150" step="1" value="128">
-    <div class="row seg" id="durRow" role="group" aria-label="Длительность">
-      <span>Длительность</span>
-      <button data-sec="30">30 с</button>
-      <button data-sec="60">1 мин</button>
-      <button data-sec="120">2 мин</button>
-      <button data-sec="0">без конца</button>
+    <div class="row seg" id="srcRow" role="group" aria-label="Музыка">
+      <button data-src="metro">Метроном</button>
+      <button data-src="track">Трек</button>
+    </div>
+    <div id="metroOpts">
+      <label for="bpm" class="row"><span>Темп</span><span><b id="bpmVal">128</b> BPM</span></label>
+      <input id="bpm" type="range" min="110" max="150" step="1" value="128">
+      <div class="row seg" id="durRow" role="group" aria-label="Длительность">
+        <span>Длительность</span>
+        <button data-sec="30">30 с</button>
+        <button data-sec="60">1 мин</button>
+        <button data-sec="120">2 мин</button>
+        <button data-sec="0">без конца</button>
+      </div>
+    </div>
+    <div id="trackOpts">
+      <div class="row files">
+        <label class="filebtn">Аудио<input type="file" id="audioFile" accept="audio/*,.mp3,.m4a,.wav"></label>
+        <label class="filebtn">Разметка<input type="file" id="markupFile" accept=".json,application/json"></label>
+        <button id="testTrackBtn">Тестовый трек</button>
+      </div>
+      <div id="trackInfo">Выбери аудио и файл разметки или возьми тестовый трек.</div>
+      <label class="check"><input type="checkbox" id="firstMin"> Только первая минута</label>
+      <label class="check"><input type="checkbox" id="overlayClicks"> Щелчок на каждый удар — проверить разметку на слух</label>
     </div>
     <div class="row" id="calRow">
       <span>Поправка: <b id="calVal">—</b></span>

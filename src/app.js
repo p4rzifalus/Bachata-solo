@@ -13,6 +13,8 @@ import { StartCheck, dirWord } from "./start.js";
 import { CALIB, computeCalibration } from "./calibrate.js";
 import { computeMetrics } from "./metrics.js";
 import { renderResult } from "./result.js";
+import { normalizeMarkup, sectionAt, fmt } from "./markup.js";
+import { makeTestTrack } from "./testtrack.js";
 
 const DEBUG = new URLSearchParams(location.search).has("debug");
 if (DEBUG) document.body.classList.add("debug");
@@ -271,6 +273,71 @@ bpmEl.addEventListener("input", () => {
   try { localStorage.setItem("bachata.bpm", bpmEl.value); } catch (e) {}
 });
 
+/* ─── музыка: метроном или трек ─── */
+let source = "metro";
+try { source = localStorage.getItem("bachata.source") || "metro"; } catch (e) {}
+const track = { buffer: null, raw: null, markup: null, audioName: "", problems: [], notes: [] };
+const trackInfo = $("trackInfo");
+const srcBtns = [...document.querySelectorAll("#srcRow button")];
+function setSource(src) {
+  source = src;
+  document.body.dataset.src = src;
+  srcBtns.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.src === src)));
+  try { localStorage.setItem("bachata.source", src); } catch (e) {}
+}
+srcBtns.forEach(b => b.addEventListener("click", () => setSource(b.dataset.src)));
+setSource(source);
+
+// Разметка приводится заново, когда появляется аудио: нужна его длительность.
+function refreshTrack() {
+  if (track.raw) {
+    const r = normalizeMarkup(track.raw, track.buffer?.duration);
+    track.markup = r.markup; track.problems = r.problems; track.notes = r.notes;
+  }
+  const m = track.markup, lines = [];
+  if (m) lines.push(`<b>${esc(m.title)}</b>${m.artist ? " — " + esc(m.artist) : ""} · ${m.bpm} BPM · ${fmt(m.duration)}` +
+    ` · ${m.verified ? "проверена" : "не проверена"}` + (m.sections.length ? ` · ${m.sections.map(x => x.type).join(" → ")}` : ""));
+  if (!track.buffer) lines.push("Нужно аудио — выбери файл трека.");
+  else if (track.audioName) lines.push(`Аудио: ${esc(track.audioName)}, ${fmt(track.buffer.duration)}`);
+  if (!track.raw) lines.push("Нужна разметка — выбери JSON.");
+  for (const p of track.problems) lines.push(`<span class="warn">${esc(p)}</span>`);
+  for (const n of track.notes) lines.push(esc(n));
+  trackInfo.innerHTML = lines.join("<br>");
+}
+const esc = (x) => String(x).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+$("audioFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  trackInfo.textContent = "Читаю аудио…";
+  try {
+    // аудио не загружается на сервер и не сохраняется — только в памяти этой вкладки
+    track.buffer = await audio().decodeAudioData(await f.arrayBuffer());
+    track.audioName = f.name;
+    e.target.parentElement.classList.add("has");
+  } catch (err) {
+    track.buffer = null;
+    trackInfo.innerHTML = `<span class="warn">Не получилось прочитать аудио: ${esc(err.message || err)}</span>`;
+    return;
+  }
+  refreshTrack();
+});
+
+$("markupFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  try { track.raw = JSON.parse(await f.text()); }
+  catch (err) { trackInfo.innerHTML = `<span class="warn">Файл разметки не читается как JSON</span>`; return; }
+  e.target.parentElement.classList.add("has");
+  refreshTrack();
+});
+
+$("testTrackBtn").addEventListener("click", async () => {
+  trackInfo.textContent = "Собираю тестовый трек…";
+  const { buffer, markup } = await makeTestTrack(audio().sampleRate);
+  track.buffer = buffer; track.raw = markup; track.audioName = "";
+  document.querySelectorAll(".filebtn").forEach(l => l.classList.remove("has"));
+  refreshTrack();
+});
+
 /* ─── длительность сессии ─── */
 let sessionSec = 60;
 try { sessionSec = +(localStorage.getItem("bachata.duration") ?? 60); } catch (e) {}
@@ -320,15 +387,41 @@ playBtn.addEventListener("click", async () => {
   if (player.playing) { endSession(); return; }
   try { wakeLock = await navigator.wakeLock.request("screen"); } catch (err) {}
   resetCount();
-  const bpm = +bpmEl.value, P = 60 / bpm;
-  // отсчёт + выбранная длительность; «без конца» — до кнопки «Стоп» (но не дольше 10 минут)
-  const markup = metronomeMarkup({ bpm, duration: sessionSec ? 4 * P + sessionSec + 0.01 : 600 });
   resetStart();
-  player.start(markup);
+  let markup;
+  if (source === "track") {
+    if (!track.buffer || !track.markup) { trackInfo.innerHTML = `<span class="warn">Нужны и аудио, и разметка — или тестовый трек.</span>`; return; }
+    markup = track.markup;
+    player.start(markup, trackPlan(markup));
+  } else {
+    const bpm = +bpmEl.value, P = 60 / bpm;
+    // отсчёт + выбранная длительность; «без конца» — до кнопки «Стоп» (но не дольше 10 минут)
+    markup = metronomeMarkup({ bpm, duration: sessionSec ? 4 * P + sessionSec + 0.01 : 600 });
+    player.start(markup);
+  }
   detector.setBeatPeriod(60 / markup.bpm);
   if (cameraOn) startRecording(markup);
   setPlaying(true);
 });
+
+/* Трек: старт с danceStart. Первый «раз» не раньше danceStart, перед ним — отсчёт
+ * «5-6-7-8» щелчками поверх музыки (4 удара разметки). «Только первая минута» —
+ * минута от первого «раз».
+ */
+function trackPlan(markup) {
+  const { beats, downbeats } = markup;
+  const idxOf = (t) => beats.findIndex(b => Math.abs(b - t) < 0.02);
+  let one = downbeats.map(idxOf).find(i => i >= 0 && beats[i] >= markup.danceStart - 0.05);
+  if (one == null) one = idxOf(downbeats[0]);
+  while (one < 4) one += 8;                         // для отсчёта нужны 4 удара перед «раз»
+  return {
+    from: beats[one - 4],
+    countInEnd: one,
+    buffer: track.buffer,
+    clicks: $("overlayClicks").checked ? "overlay" : "countin",
+    until: $("firstMin").checked ? beats[one] + 60 : markup.duration,
+  };
+}
 
 // Счёт на экране берётся из тех же аудио-часов, по которым стоят удары,
 // с поправкой на задержку вывода звука — поэтому цифра меняется вместе со звуком.
@@ -350,7 +443,8 @@ function drawBeat() {
   countEl.className = b.countIn ? "countin" : b.count === 1 ? "one" : "";
   void countEl.offsetWidth;
   countEl.classList.add("pop");
-  countLabel.textContent = b.countIn ? "отсчёт" : "";
+  const sec = player.markup.sections?.length ? sectionAt(player.markup.sections, player.markup.beats[b.index]) : null;
+  countLabel.textContent = b.countIn ? "отсчёт" : sec ?? "";
   dots.forEach((d, k) => d.classList.toggle("on", !b.countIn && k < b.count));
 }
 
@@ -379,6 +473,7 @@ function endSession() {
   const m = computeMetrics({
     events, beats: rec.beats, counts: rec.counts, period, endT, oneDir,
     start: startCheck?.start ?? null, ones: startCheck?.ones ?? null,
+    sections: rec.track?.sections, accents: rec.track?.accents,
   });
   if (m.events < 8) {
     startNote.textContent = "Для результата мало шагов — потанцуй подольше";
@@ -388,7 +483,7 @@ function endSession() {
   const { matched, ...summary } = m;
   rec.metrics = summary;
   lastMetrics = m;
-  renderResult(resultEl, m, { beats: rec.beats, counts: rec.counts, period });
+  renderResult(resultEl, m, { beats: rec.beats, counts: rec.counts, period, track: rec.track });
   ui.show("result");
   $("resultBody").scrollTop = 0;
 }
@@ -553,6 +648,14 @@ function startRecording(markup) {
     frames: [],
     events: [],
   };
+  if (source === "track") {
+    const o = player.origin;
+    rec.track = {
+      id: markup.id, title: markup.title, artist: markup.artist, verified: markup.verified,
+      sections: markup.sections.map(x => ({ ...x, start: +(o + x.start).toFixed(4) })),
+      accents: markup.accents.map(a => ({ ...a, time: +(o + a.time).toFixed(4) })),
+    };
+  }
   rec._markup = markup;
   rec._origin = player.origin;
   rec._counts = player.counts;

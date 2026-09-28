@@ -60,7 +60,11 @@ export function assignBeats(events, beats, counts, period, oneDir) {
   return { assigned, lagMs: Math.round(best.lag * 1000) };
 }
 
-export function computeMetrics({ events, beats, counts, period, start, ones, endT, oneDir = "left" }) {
+/* sections, accents — части трека и акценты во времени аудио-часов (только для треков).
+ * Акценты в оценку не идут; на брейке музыка молчит, поэтому удары внутри брейка
+ * не считаются пропущенными.
+ */
+export function computeMetrics({ events, beats, counts, period, start, ones, endT, oneDir = "left", sections = [], accents = [] }) {
   // танец считаем с первого шага (начало из StartCheck) и до конца сессии
   const t0 = start?.t ?? -Infinity, t1 = endT ?? Infinity;
   const { assigned: ev, lagMs } = assignBeats(events.filter(e => e.t >= t0 - 0.05 && e.t <= t1), beats, counts, period, oneDir);
@@ -76,7 +80,9 @@ export function computeMetrics({ events, beats, counts, period, start, ones, end
       start = { ...start, count, ok, verdict, offsetMs: s0.offsetMs };
     }
   }
-  const beatIdx = beats.map((b, i) => i).filter(i => beats[i] >= t0 - period / 2 && beats[i] <= t1);
+  const breaks = (accents || []).filter(a => a.type === "break" && a.duration).map(a => [a.time - 0.05, a.time + a.duration]);
+  const inBreak = (t) => breaks.some(([a, b]) => t >= a && t < b);
+  const beatIdx = beats.map((b, i) => i).filter(i => beats[i] >= t0 - period / 2 && beats[i] <= t1 && !inBreak(beats[i]));
 
   // смещение и стабильность
   const offs = ev.map(e => e.offsetMs);
@@ -109,8 +115,22 @@ export function computeMetrics({ events, beats, counts, period, start, ones, end
   // пропуски: удары, на которые не пришлось ни одной постановки
   const missed = beatIdx.filter(i => !byBeat.has(i)).length;
 
+  // попадание по частям трека (±150 мс): быстрые части обычно даются хуже — это полезно видеть
+  const parts = [];
+  (sections || []).forEach((sec, k) => {
+    const end = sections[k + 1]?.start ?? Infinity;
+    const inSec = ev.filter(e => beats[e.beat] >= sec.start - 0.05 && beats[e.beat] < end - 0.05);
+    if (inSec.length < 4) return;
+    const prev = parts.find(p => p.type === sec.type);
+    const hits = inSec.filter(e => Math.abs(e.offsetMs) <= ZONES.ok).length;
+    if (prev) { prev.n += inSec.length; prev.hits += hits; }
+    else parts.push({ type: sec.type, n: inSec.length, hits });
+  });
+  const bySection = parts.map(p => ({ type: p.type, n: p.n, hit150: pct(p.hits, p.n) }));
+
   const m = {
     matched: ev,
+    bySection,
     lagMs,
     events: ev.length, beats: beatIdx.length, missed,
     meanMs, sdMs, hit70, hit150, tempoRatio,
@@ -176,6 +196,7 @@ function describe(m) {
     if (m.taps.wrong) out.taps += ` · ещё ${m.taps.wrong} ${plural(m.taps.wrong, "тап", "тапа", "тапов")} не на своём счёте`;
   }
   if (m.ones) out.ones = `На раз шаг в нужную сторону в ${m.ones.ok} из ${m.ones.n} восьмёрок`;
+  if (m.bySection?.length > 1) out.sections = "По частям (±150 мс): " + m.bySection.map(p => `${p.type} — ${p.hit150}%`).join(" · ");
   if (m.missed) out.missed = `Не увидел шага на ${m.missed} ${plural(m.missed, "удар", "удара", "ударов")} из ${m.beats}`;
   return out;
 }
