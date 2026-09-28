@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Редактор разметки</title>
+<style>
+  :root{
+    --graphite:#171A1C; --slate:#232A2D; --chalk:#F0EDE8;
+    --dim:#8A9296; --teal:#79B3A5; --amber:#E8B23A; --red:#E0654F;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--graphite);color:var(--chalk);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    font-size:15px;-webkit-tap-highlight-color:transparent}
+  header{display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap;padding:1rem 1rem .4rem}
+  header h1{font-size:1.25rem;font-weight:600;margin:0}
+  header a{color:var(--dim);font-size:.9rem}
+  #status{color:var(--dim);font-size:.9rem;padding:0 1rem .6rem;min-height:1.4em}
+  #status .warn{color:var(--amber)}
+
+  #waveBox{position:relative;margin:0 1rem;border:1px solid rgba(240,237,232,.12);border-radius:10px;overflow:hidden;background:#1d2224}
+  #wave{display:block;width:100%;height:230px;touch-action:none;cursor:crosshair}
+  #overview{display:block;width:100%;height:38px;border-top:1px solid rgba(240,237,232,.12);cursor:pointer;touch-action:none}
+  #bigCount{position:absolute;right:14px;top:8px;font-size:3.2rem;font-weight:200;line-height:1;
+    font-variant-numeric:tabular-nums;pointer-events:none;opacity:0}
+  #bigCount.on{opacity:1}
+  #bigCount.one{color:var(--teal);font-weight:500}
+  #timeRow{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.5rem 1rem 0;color:var(--dim);font-size:.9rem;font-variant-numeric:tabular-nums}
+  #timeRow .grow{flex:1}
+
+  main{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:.8rem;padding:.8rem 1rem 2rem}
+  .panel{background:var(--slate);border:1px solid rgba(240,237,232,.1);border-radius:12px;padding:.8rem .9rem}
+  .panel h2{font-size:.78rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:0 0 .6rem}
+  .row{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin-bottom:.5rem}
+  .row:last-child{margin-bottom:0}
+  .hint{color:var(--dim);font-size:.85rem;line-height:1.4;margin:.2rem 0 .5rem}
+  button,.filebtn{font:inherit;font-weight:500;font-size:.9rem;color:var(--chalk);background:#2c3538;
+    border:1px solid rgba(240,237,232,.18);border-radius:9px;padding:.45rem .75rem;cursor:pointer;white-space:nowrap}
+  button:hover,.filebtn:hover{background:#34403f}
+  button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+  button[disabled]{opacity:.4;cursor:default}
+  button.primary{background:var(--teal);color:#10201C;border-color:transparent}
+  button.on{background:var(--amber);color:#1d1606;border-color:transparent}
+  .filebtn{position:relative}
+  .filebtn input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+  .filebtn:focus-within{outline:2px solid var(--teal);outline-offset:2px}
+  label.check{display:flex;gap:.4rem;align-items:center;color:var(--dim);font-size:.9rem}
+  label.check input{accent-color:var(--teal)}
+  input[type=text],input[type=number],select{font:inherit;font-size:.9rem;color:var(--chalk);background:#1d2224;
+    border:1px solid rgba(240,237,232,.18);border-radius:8px;padding:.4rem .5rem;min-width:0}
+  input[type=number]{width:4.2rem}
+  .meta{display:grid;grid-template-columns:auto 1fr;gap:.4rem .6rem;align-items:center;font-size:.9rem;color:var(--dim);margin-bottom:.6rem}
+  #items{list-style:none;margin:.3rem 0 0;padding:0;font-size:.88rem;display:grid;gap:.25rem}
+  #items li{display:flex;gap:.5rem;align-items:center}
+  #items li span{flex:1}
+  #items li button{padding:.15rem .5rem}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:.3rem;vertical-align:middle}
+  #tapBig{width:100%;padding:1.1rem;font-size:1.1rem;display:none}
+  body.tapping #tapBig{display:block}
+  kbd{font:inherit;font-size:.8rem;background:#1d2224;border:1px solid rgba(240,237,232,.2);border-radius:4px;padding:0 .3rem}
+  #catalogOut{width:100%;height:5.5rem;font:12px/1.35 ui-monospace,Menlo,monospace;color:var(--chalk);background:#1d2224;
+    border:1px solid rgba(240,237,232,.18);border-radius:8px;padding:.4rem;display:none;margin-top:.5rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>Редактор разметки</h1>
+  <a href="./">← к тренажёру</a>
+</header>
+<div id="status">Выбери mp3 — разметка начнётся автоматически. Аудио никуда не загружается.</div>
+
+<div id="waveBox">
+  <canvas id="wave" aria-label="Волна трека с ударами"></canvas>
+  <canvas id="overview" aria-label="Весь трек: клик — перейти"></canvas>
+  <div id="bigCount">1</div>
+</div>
+<div id="timeRow">
+  <span id="timeCur">0:00.000</span>
+  <span class="grow"></span>
+  <button id="zoomOut" title="Отдалить">−</button>
+  <button id="zoomIn" title="Приблизить">+</button>
+  <button id="zoomAll">Весь трек</button>
+</div>
+
+<main>
+  <section class="panel">
+    <h2>Файлы</h2>
+    <div class="row">
+      <label class="filebtn">Аудио<input type="file" id="audioFile" accept="audio/*,.mp3,.m4a,.wav"></label>
+      <label class="filebtn">Разметка — продолжить<input type="file" id="markupFile" accept=".json,application/json"></label>
+      <button id="autoBtn" disabled>Разметить заново</button>
+    </div>
+    <p class="hint">Автоматика хорошо находит удары, но часто путает, где «раз» (1 и 5 звучат похоже). «Раз» всегда подтверждай на слух.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Слушать</h2>
+    <div class="row">
+      <button id="playBtn" class="primary" disabled>▶ Играть</button>
+      <button id="checkBtn" disabled>Прослушать с отсчётом</button>
+    </div>
+    <div class="row"><label class="check"><input type="checkbox" id="clicks"> Щелчки метронома поверх трека</label></div>
+    <p class="hint">Клик по волне — курсор (отсюда играем и сюда ставим части). Клик по риске — выбрать удар (приблизь, если риски густо). <kbd>Пробел</kbd> — играть/пауза.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Сетка ударов</h2>
+    <div class="row">Вся сетка:
+      <button data-shift="-50">−50 мс</button><button data-shift="-5">−5</button>
+      <button data-shift="5">+5</button><button data-shift="50">+50 мс</button>
+    </div>
+    <div class="row">Удар <b id="selInfo">не выбран</b></div>
+    <div class="row">
+      <button data-move="-5" class="needsel">← 5 мс</button><button data-move="5" class="needsel">5 мс →</button>
+      <label class="check"><input type="checkbox" id="pullTail"> тянуть хвост</label>
+    </div>
+    <div class="row">
+      <button id="oneBtn" class="needsel primary">Здесь раз</button>
+      <button id="delBeat" class="needsel">Удалить удар</button>
+      <button id="addBeat" disabled>Удар в курсор</button>
+    </div>
+    <p class="hint"><kbd>←</kbd>/<kbd>→</kbd> — сдвинуть удар на 5 мс (с <kbd>Shift</kbd> — на 50), <kbd>1</kbd> — «здесь раз». Риску можно тащить мышью.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Тапы</h2>
+    <div class="row">
+      <button id="tapMode" disabled>Тапать</button>
+      <button id="tapDone" disabled>Сетка по тапам</button>
+      <span id="tapInfo" class="hint" style="margin:0"></span>
+    </div>
+    <button id="tapBig">Тап</button>
+    <p class="hint">Включи «Тапать», запусти трек и тапай по <kbd>Пробелу</kbd> или по кнопке на каждый удар. «Сетка по тапам» заменит сетку ровной — по среднему темпу и фазе твоих тапов.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Части и акценты — в курсор</h2>
+    <div class="row" id="secBtns"></div>
+    <div class="row">
+      <button id="breakBtn" disabled>Брейк</button> на <input type="number" id="breakBeats" min="1" max="16" value="2"> уд.
+      <button id="hitBtn" disabled>Хит</button>
+      <button id="danceBtn" disabled>Начало танца</button>
+    </div>
+    <ul id="items"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>Проверка и сохранение</h2>
+    <div class="meta">
+      <label for="mId">id</label><input type="text" id="mId" placeholder="naprimer-track">
+      <label for="mTitle">Название</label><input type="text" id="mTitle">
+      <label for="mArtist">Исполнитель</label><input type="text" id="mArtist">
+      <label for="mLicense">Лицензия</label><input type="text" id="mLicense" placeholder="CC BY 4.0 или «коммерческий»">
+      <label for="mSource">Источник</label><input type="text" id="mSource" placeholder="https://…">
+      <label for="mDiff">Сложность</label>
+      <select id="mDiff"><option value="1">1 — лёгкий</option><option value="2">2 — средний</option><option value="3">3 — сложный</option></select>
+    </div>
+    <div class="row"><label class="check"><input type="checkbox" id="verified"> Проверено: прослушал с отсчётом, «раз» на месте</label></div>
+    <div class="row">
+      <button id="saveBtn" class="primary" disabled>Скачать JSON</button>
+      <button id="catalogBtn" disabled>Запись для catalog.json</button>
+    </div>
+    <textarea id="catalogOut" readonly aria-label="Запись для catalog.json"></textarea>
+  </section>
+</main>
+
+<script type="module" src="./src/editor.js"></script>
+</body>
+</html>
