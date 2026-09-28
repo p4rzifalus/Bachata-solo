@@ -11,6 +11,8 @@ import { loadSettings, mountSliders } from "./debug.js";
 import { LiveChart } from "./chart.js";
 import { StartCheck, dirWord } from "./start.js";
 import { CALIB, computeCalibration } from "./calibrate.js";
+import { computeMetrics } from "./metrics.js";
+import { renderResult } from "./result.js";
 
 const DEBUG = new URLSearchParams(location.search).has("debug");
 if (DEBUG) document.body.classList.add("debug");
@@ -124,21 +126,25 @@ function runDance(res, tAudio) {
       if (match) checkOne(t, m.dir, match, m.pending.conf);
       continue;
     }
-    // итог шаг/тап приходит к следующей постановке: тап — если следующей встала та же стопа
-    if (m.type === "tap") {
-      tapIcon.classList.add("on");
-      clearTimeout(tapTimer);
-      tapTimer = setTimeout(() => tapIcon.classList.remove("on"), 450);
-    }
-    if (DEBUG) chart.mark(t, m.foot, m.type);
-    const ev = { ...m, t: +m.t.toFixed(4), ...(match && { beat: match.index, count: match.count, offsetMs: Math.round(match.offsetMs) }) };
-    if (rec && playing) rec.events.push(ev);
-    if (DEBUG) {
-      const side = m.foot === "L" ? "левая" : "правая";
-      dbgLive.textContent = `${side} · ${m.type === "step" ? "шаг" : "тап"} ${dirWord(m.dir)}` +
-        (match ? ` · ${match.offsetMs >= 0 ? "+" : ""}${Math.round(match.offsetMs)} мс · счёт ${match.count}` : "") +
-        ` · ${m.how === "touch" ? "касание" : "встала"} · уверенность ${m.conf}\n${fps.text} · время кадра: ${fps.source}`;
-    }
+    handleEvent(m, t, match);
+  }
+}
+
+// Итог «шаг или тап» — к следующей постановке: тап, если следующей встала та же стопа.
+function handleEvent(m, t, match) {
+  if (m.type === "tap") {
+    tapIcon.classList.add("on");
+    clearTimeout(tapTimer);
+    tapTimer = setTimeout(() => tapIcon.classList.remove("on"), 450);
+  }
+  if (DEBUG) chart.mark(t, m.foot, m.type);
+  const ev = { ...m, t: +m.t.toFixed(4), tCal: +t.toFixed(4), ...(match && { beat: match.index, count: match.count, offsetMs: Math.round(match.offsetMs) }) };
+  if (rec?._markup) rec.events.push(ev);   // запись идёт, пока сессия не закрыта
+  if (DEBUG) {
+    const side = m.foot === "L" ? "левая" : "правая";
+    dbgLive.textContent = `${side} · ${m.type === "step" ? "шаг" : "тап"} ${dirWord(m.dir)}` +
+      (match ? ` · ${match.offsetMs >= 0 ? "+" : ""}${Math.round(match.offsetMs)} мс · счёт ${match.count}` : "") +
+      ` · ${m.how === "touch" ? "касание" : "встала"} · уверенность ${m.conf}\n${fps.text} · время кадра: ${fps.source}`;
   }
 }
 
@@ -265,6 +271,18 @@ bpmEl.addEventListener("input", () => {
   try { localStorage.setItem("bachata.bpm", bpmEl.value); } catch (e) {}
 });
 
+/* ─── длительность сессии ─── */
+let sessionSec = 60;
+try { sessionSec = +(localStorage.getItem("bachata.duration") ?? 60); } catch (e) {}
+const durBtns = [...document.querySelectorAll("#durRow button")];
+const showDur = () => durBtns.forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.sec === sessionSec)));
+durBtns.forEach(b => b.addEventListener("click", () => {
+  sessionSec = +b.dataset.sec;
+  try { localStorage.setItem("bachata.duration", String(sessionSec)); } catch (e) {}
+  showDur();
+}));
+showDur();
+
 function showMetronome() {
   if (calib.running) stopCalib();
   updateCalVal();
@@ -286,6 +304,7 @@ function resetCount() {
 function setPlaying(on) {
   playBtn.textContent = on ? "Стоп" : "Старт";
   bpmEl.disabled = on;
+  document.body.classList.toggle("playing", on);
 }
 
 function stopPlaying() {
@@ -298,10 +317,12 @@ function stopPlaying() {
 playBtn.addEventListener("click", async () => {
   const ctx = audio();
   player = player || new BeatPlayer(ctx, masterOut());
-  if (player.playing) { stopPlaying(); return; }
+  if (player.playing) { endSession(); return; }
   try { wakeLock = await navigator.wakeLock.request("screen"); } catch (err) {}
   resetCount();
-  const markup = metronomeMarkup({ bpm: +bpmEl.value });
+  const bpm = +bpmEl.value, P = 60 / bpm;
+  // отсчёт + выбранная длительность; «без конца» — до кнопки «Стоп» (но не дольше 10 минут)
+  const markup = metronomeMarkup({ bpm, duration: sessionSec ? 4 * P + sessionSec + 0.01 : 600 });
   resetStart();
   player.start(markup);
   detector.setBeatPeriod(60 / markup.bpm);
@@ -319,7 +340,7 @@ function drawBeat() {
     const c = player.ctx;
     latencyEl.textContent = `вывод звука ${Math.round(outputLatency(c) * 1000)} мс · ${c.sampleRate} Гц · ${c.state} · поправка ${calibrationMs()} мс`;
   }
-  if (!player?.playing) { if (player && shownIndex >= 0) stopPlaying(); return; }
+  if (!player?.playing) { if (player && shownIndex >= 0) endSession(); return; }
 
   const b = player.now();
   if (!b || b.index === shownIndex) return;
@@ -341,6 +362,39 @@ $("backBtn").addEventListener("click", () => {
   hold.reset();
   ui.show("camera");
 });
+
+/* ─── конец сессии и результат ─── */
+const resultEl = $("result");
+let lastMetrics = null;
+
+function endSession() {
+  const endT = perfToAudio(performance.now()) - calibrationMs() / 1000;
+  // постановки, которые ждали следующей, — шаги
+  for (const m of detector.flush()) handleEvent(m, m.t - calibrationMs() / 1000, player.match(m.t - calibrationMs() / 1000));
+  stopPlaying();
+  if (!cameraOn || !rec?.beats) return;
+
+  const period = 60 / rec.bpm;
+  const events = rec.events.map(e => ({ t: e.tCal, foot: e.foot, type: e.type, dir: e.dir }));
+  const m = computeMetrics({
+    events, beats: rec.beats, counts: rec.counts, period, endT, oneDir,
+    start: startCheck?.start ?? null, ones: startCheck?.ones ?? null,
+  });
+  if (m.events < 8) {
+    startNote.textContent = "Для результата мало шагов — потанцуй подольше";
+    startNote.className = "warn";
+    return;
+  }
+  const { matched, ...summary } = m;
+  rec.metrics = summary;
+  lastMetrics = m;
+  renderResult(resultEl, m, { beats: rec.beats, counts: rec.counts, period });
+  ui.show("result");
+  $("resultBody").scrollTop = 0;
+}
+
+$("againBtn").addEventListener("click", () => showMetronome());
+$("downloadBtn").addEventListener("click", () => downloadRec());
 
 /* ─── калибровка задержки ───
  * Метроном: отсчёт «5-6-7-8», потом 16 ударов базового шага. Первые 4 не считаются,
@@ -529,6 +583,11 @@ function finishRecording() {
 
 $("exportBtn").addEventListener("click", () => {
   if (!rec || !rec.frames.length) { dbgLive.textContent = "Записывать нечего: включи камеру и потанцуй под метроном."; return; }
+  downloadRec();
+});
+
+function downloadRec() {
+  if (!rec) return;
   const data = rec._markup ? snapshot(rec) : rec;   // можно скачать, не останавливая метроном
   const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
   const a = document.createElement("a");
@@ -536,7 +595,7 @@ $("exportBtn").addEventListener("click", () => {
   a.download = `bachata-session-${data.recordedAt.replace(/[:.]/g, "-").slice(0, 19)}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-});
+}
 
 /* ─── пороги ─── */
 const sliders = mountSliders($("sliderRows"), settings);

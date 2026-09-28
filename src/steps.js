@@ -132,6 +132,16 @@ export class StepDetector {
     return out;
   }
 
+  // Конец сессии: постановки, для которых ещё не пришла следующая, считаем шагами.
+  flush() {
+    const out = this.pending.map(p => ({
+      kind: "event", foot: p.foot, t: p.t, dir: p.dir, how: p.how, type: "step",
+      conf: p.conf, travel: +p.travel.toFixed(3),
+    }));
+    this.pending = [];
+    return out;
+  }
+
   hipAt(tq) {
     const h = this.hipHist;
     for (let i = h.length - 1; i >= 0; i--) if (h[i][0] <= tq) return h[i][1];

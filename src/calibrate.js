@@ -18,6 +18,7 @@ export const CALIB = {
 // Если на раз шаг вправо — всё зеркально.
 const FOOT_LEFT = { 1: "L", 2: "R", 3: "L", 4: "R", 5: "R", 6: "L", 7: "R", 8: "L" };
 const mirror = (f) => (f === "L" ? "R" : "L");
+export const expectedFoot = (count, oneDir = "left") => (oneDir === "left" ? FOOT_LEFT[count] : mirror(FOOT_LEFT[count]));
 
 const median = (a) => {
   const s = [...a].sort((x, y) => x - y), n = s.length;
@@ -33,7 +34,7 @@ const median = (a) => {
  */
 export function computeCalibration(lands, beats, counts, period, oneDir = "left", cfg = CALIB) {
   const first = cfg.skip, last = Math.min(cfg.beats, beats.length) - 1;
-  const footFor = (c) => (oneDir === "left" ? FOOT_LEFT[c] : mirror(FOOT_LEFT[c]));
+  const footFor = (c) => expectedFoot(c, oneDir);
 
   const hypothesis = (lag) => {
     const used = new Map();   // удар → постановка, ближайшая к нему

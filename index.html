@@ -89,6 +89,42 @@
   .dval.changed{color:var(--amber)}
   .drow input{width:100%;accent-color:var(--teal)}
 
+  /* длительность и прочие настройки — прячем, пока идёт танец */
+  #durRow{margin:-.2rem 0 1rem;color:var(--dim);justify-content:flex-start!important;gap:.4rem}
+  #durRow span{margin-right:.3rem}
+  #durRow button{padding:.4rem .7rem;font-size:.9rem}
+  #durRow button[aria-pressed="true"]{background:var(--teal);color:#10201C;border-color:transparent}
+  body.playing #metroSettings{display:none}
+
+  /* результат */
+  body[data-screen="result"] #result{display:flex}
+  #result{flex-direction:column;background:var(--graphite)}
+  #resultBody{flex:1;overflow:auto;width:100%;max-width:40rem;margin:0 auto;
+    padding:calc(1.5rem + env(safe-area-inset-top)) 1.25rem 1rem}
+  #scoreBox{display:flex;align-items:baseline;gap:.6rem;margin-bottom:1rem}
+  #scoreVal{font-weight:200;font-size:5.5rem;line-height:.9;font-variant-numeric:tabular-nums;color:var(--teal)}
+  #scoreLabel{color:var(--dim)}
+  #metricList{list-style:none;padding:0;margin:0 0 1.5rem;display:grid;gap:.55rem;line-height:1.4}
+  #metricList li{padding-left:1rem;position:relative}
+  #metricList li::before{content:"";position:absolute;left:0;top:.6em;width:5px;height:5px;border-radius:50%;background:var(--dim)}
+  #result h3{font-size:.85rem;font-weight:500;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:0 0 .5rem}
+  #timelineWrap{overflow-x:auto;border:1px solid rgba(240,237,232,.12);border-radius:10px;background:rgba(35,42,45,.5)}
+  #timeline svg{display:block}
+  .legend{font-size:.82rem;color:var(--dim);line-height:1.6;margin:.5rem 0 1.2rem}
+  .legend .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 .2rem 0 .5rem;vertical-align:middle}
+  .legend .dot:first-child{margin-left:0}
+  .dot.good{background:#79B3A5}.dot.ok{background:#E8B23A}.dot.bad{background:#E0654F}
+  #result details{color:var(--dim);font-size:.9rem;line-height:1.5;margin-bottom:1rem}
+  #result summary{cursor:pointer;color:var(--chalk)}
+  #scoreParts{border-collapse:collapse;width:100%;margin-top:.5rem}
+  #scoreParts td{padding:.3rem .4rem .3rem 0;border-top:1px solid rgba(240,237,232,.1)}
+  #scoreParts td:nth-child(2){color:var(--chalk);font-variant-numeric:tabular-nums}
+  #resultPanel{width:100%;max-width:40rem;margin:0 auto;flex-direction:row-reverse;
+    padding:1rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom))}
+  #resultPanel button{flex:1 1 12rem}
+  /* вспышки — только во время танца */
+  body:not([data-screen="metro"]):not([data-screen="calib"]) #flash{display:none}
+
   /* калибровка */
   #calib{flex-direction:column}
   #calibBox{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.8rem;
@@ -219,8 +255,16 @@
   </div>
 
   <div id="metroPanel">
+   <div id="metroSettings">
     <label for="bpm" class="row"><span>Темп</span><span><b id="bpmVal">128</b> BPM</span></label>
     <input id="bpm" type="range" min="110" max="150" step="1" value="128">
+    <div class="row seg" id="durRow" role="group" aria-label="Длительность">
+      <span>Длительность</span>
+      <button data-sec="30">30 с</button>
+      <button data-sec="60">1 мин</button>
+      <button data-sec="120">2 мин</button>
+      <button data-sec="0">без конца</button>
+    </div>
     <div class="row" id="calRow">
       <span>Поправка: <b id="calVal">—</b></span>
       <button id="recalBtn">Перекалибровать</button>
@@ -230,6 +274,7 @@
       <button data-dir="left">влево</button>
       <button data-dir="right">вправо</button>
     </div>
+   </div>
     <div id="latency">—</div>
     <div id="dbgLive"></div>
     <div id="dbgRow">
@@ -240,6 +285,33 @@
       <button id="backBtn">Назад</button>
       <button id="playBtn" class="primary">Старт</button>
     </div>
+  </div>
+</section>
+
+<section id="result" class="screen">
+  <div id="resultBody">
+    <div id="scoreBox">
+      <div id="scoreVal">0</div>
+      <div id="scoreLabel">из 100</div>
+    </div>
+    <ul id="metricList"></ul>
+    <h3>Таймлайн</h3>
+    <div id="timelineWrap"><div id="timeline"></div></div>
+    <p class="legend"><span class="dot good"></span>±70 мс <span class="dot ok"></span>±150 мс <span class="dot bad"></span>дальше
+      · кольцо — тап · выше линии — позже бита, ниже — раньше · толстая риска — «раз»</p>
+    <details>
+      <summary>Как считается оценка</summary>
+      <p>Оценка — взвешенная сумма частей, каждая от 0 до 100. Попадание в бит: шаг в зелёной зоне (±70 мс)
+        считается полностью, в жёлтой (±150 мс) — наполовину. Стабильность: разброс до 40 мс — 100, от 160 мс — 0.
+        Тапы — доля восьмёрок, где тапы на 4 и 8 на месте. Направление — доля «раз» с шагом в нужную сторону.
+        Старт: с раз в нужную сторону — 100, с раз не туда — 50, не с раз — 0. Темп — шаги идут в темпе удара.
+        Если часть не удалось измерить, она выпадает, а веса остальных растягиваются.</p>
+      <table id="scoreParts"></table>
+    </details>
+  </div>
+  <div id="resultPanel" class="row">
+    <button id="downloadBtn">Скачать данные сессии (JSON)</button>
+    <button id="againBtn" class="primary">Ещё раз</button>
   </div>
 </section>
 
