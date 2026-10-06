@@ -181,6 +181,17 @@ tools/synth.mjs   синтетическая запись базового ша�
    что стояли во время записи.
 5. Рабочие значения перенести в `DETECT_META` в `src/steps.js` и закоммитить.
 
+## Blender MCP
+
+В корне лежит `.mcp.json` с сервером [blender-mcp](https://github.com/ahujasid/blender-mcp): Claude Code может управлять Blender (сцена, объекты, Python-код в Blender).
+
+1. Установить [uv](https://docs.astral.sh/uv/) и Blender 3.0+.
+2. Поставить аддон в Blender: `uvx mcp-for-blender install-addon`, затем в Blender: Edit → Preferences → Add-ons → включить «MCP for Blender».
+3. В Blender: N-панель → вкладка BlenderMCP → «Connect» (сокет на `localhost:9876`).
+4. Запустить `claude` в папке проекта и подтвердить сервер `blender` (проверить: `/mcp`).
+
+Хост/порт меняются через `BLENDER_HOST` / `BLENDER_PORT` в `.mcp.json`.
+
 ## Этапы
 
 - [x] 1. Каркас: камера, зеркальное видео, скелет, проверка «всё тело в кадре»
